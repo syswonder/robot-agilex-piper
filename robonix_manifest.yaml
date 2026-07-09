@@ -1,83 +1,18 @@
-# Robonix deploy manifest for the Piper-arm + Orbbec + grasp pipeline.
+# Robonix deploy manifest for the Piper arm, Orbbec camera, and
+# vertical-grasp pipeline.
 #
-# Stage progress (see /Users/howenliu/lab/grasp/MIGRATION_PLAN.md):
-#   Stage 0 ✅ — system: block live, atlas + executor + pilot up
-#   Stage 1 ✅ — orbbec_camera primitive  (url: lhw2002426/OrbbecSDK_rbnx)
-#   Stage 2 ✅ — piper_ctl primitive      (url: lhw2002426/piper_ctl_rbnx)
-#   Stage 3 ✅ — piper_description + easy_handeye2 primitives
-#                (url: lhw2002426/{piper_description_rbnx,easy_handeye2_rbnx};
-#                 calib YAML is still an identity PLACEHOLDER — replace
-#                 before real hardware. See easy_handeye2_rbnx README.)
-#   Stage 4 ✅ — llm_detect + yolo_grasp services (垂直抓取版)
-#                (url: lhw2002426/{llm_detect_rbnx,yolo_grasp_rbnx};
-#                 均使用 feature/vertical-grasp 分支：llm_detect 走
-#                 VLM 检测 + skip_depth；yolo_grasp 用固定桌面 z + 相机
-#                 射线反投影出 top-down 抓取位姿，取代了原 PLACEHOLDER。)
-#   Stage 5 ✅ — piper_moveit service     (url: lhw2002426/piper_moveit_rbnx)
-#   Stage 6 ✅ — pick skill — LLM-facing entry point
-#                (url: lhw2002426/pick_skill_rbnx, feature/vertical-grasp
-#                 分支实现 pre-/grasp/post 三段动作序列)
+# Boot order is declaration order:
+#   1. rbnx starts system services.
+#   2. soma starts primitive packages.
+#   3. rbnx starts service packages.
+#   4. soma initializes skill packages after the stage2 trigger.
 #
-# Pending hardware verification — see MIGRATION_PLAN.md tracking table.
-#
-# As later stages land, append packages to the primitive: / service:
-# / skill: blocks below in dependency order (§2.2 of MIGRATION_PLAN).
-#
-# ─── Boot ordering: STRICTLY SERIAL, declaration order ─────────────
-# 自 2026-06 两阶段 bring-up 重构起（docs/soma_two_stage_bringup.md），
-# 各段的实际启动方分工是：
-#   * builtin (atlas / executor / pilot / liaison / soma / ...)  → rbnx
-#   * primitive                                                  → soma stage 1
-#   * service                                                    → rbnx
-#   * skill (INIT only, ACTIVATE deferred to first MCP call)     → soma stage 2
-#
-# 段内顺序仍然是 STRICTLY SERIAL，依赖声明顺序：
-#   * primitive[i] 必须 CMD_INIT ok=true 才会 spawn primitive[i+1]
-#     （soma launcher.rs run_stage）；
-#   * service[i] 同理（rbnx deploy.rs）；
-#   * skill[i] 同理（soma stage 2 一个一个走 spawn + CMD_INIT）。
-# 没有 "deferred" retry —— Driver 返回 ok=false 就 fail 当前 entry，
-# soma 把对应 pgid SIGKILL 后继续下一个（不再抛全 boot fatal）。
-# rbnx 这边 service 段仍然保持原来的 ok=false → bail。So:
-#   1) put providers BEFORE consumers
-#   2) packages without a `*/driver` interface skip CMD_INIT entirely
-#      and are considered "up" the moment they register on atlas.
-#
-# ⚠️ rbnx boot 已经**不再直接**启动 primitive / skill 段。若 manifest
-# 里有 primitive 或 skill 但没有 `system.soma:` 块，rbnx 会自动注入
-# 一个 empty mapping（`ensure_soma_defaults`），soma 起来后接管两阶段；
-# 但那样 soma 会去找相对本 manifest 目录的 `soma.yaml`，若不存在就 fail。
-# 本 deploy 显式配置 soma 块 + 提供 soma.yaml + urdf/，见下方 system.soma。
-# ───────────────────────────────────────────────────────────────────
+# Keep providers before consumers.
 
 manifestVersion: 1
 name: robonix-piper-grasp-deploy
 
-env:
-  # Pilot's LLM upstream — override on the launching shell (or via a
-  # sourced .env) before `rbnx boot`. Empty values are accepted by
-  # pilot's startup and just mean "the chat path won't actually
-  # answer until these are set"; the rest of the system (atlas /
-  # executor / liaison / memory) still comes up cleanly, which is
-  # what Stage 0 validates.
-
-  # ─── Stage 3 — easy_handeye2_rbnx ─────────────────────────────────
-  # easy_handeye2_rbnx has no `*/driver` capability, so its config
-  # CANNOT be delivered via the per-package `config:` block (rbnx
-  # boot v0.1 only routes config through Driver(CMD_INIT, config_json)).
-  # Use top-level env: instead. See package README "Config / overrides".
-  # EASY_HANDEYE2_CALIB_NAME: my_eih_calib
-  # Or full absolute path (wins over CALIB_NAME):
-  EASY_HANDEYE2_CALIB_PATH: /home/syswonder/.ros2/easy_handeye2/calibrations/my_eih_calib.calib
-  # Force-overwrite ~/.ros2/easy_handeye2/calibrations/<name>.calib
-  # (default: keep existing if any — operator may have just run
-  # `easy_handeye2 calibrate` GUI):
-  # EASY_HANDEYE2_FORCE_STAGE: "1"
-
-  # ─── Stage 3A — piper_description_rbnx (URDF variant) ─────────────
-  # Default: vendored urdf/piper_description.urdf (with-gripper,
-  # joint1..joint8). Override to no-gripper variant:
-  # PIPER_URDF_PATH: ${RBNX_INVOCATION_CWD}/../packages/piper_description_rbnx/src/piper_description/urdf/piper_no_gripper_description.urdf
+env: {}
 
 system:
   atlas:
@@ -91,365 +26,93 @@ system:
     log: info
     vlm:
       upstream: https://api.ofox.ai/v1
-      api_key: sk-of-GZXXiYLTWxGtDWEyqBzyJfTEZpByJPjvbhBnzxGOnlzGZVeooWXAkNvjAjHzcoxf
+      api_key: sk-of-ROohIhJiJnwcuekrSZdCrGaaeNNUrKADBAqkotwWqnYKNuKldFQTIeoddsRzGYBx
       model: gpt-5.4-mini
       api_format: openai
   liaison:
     listen: 127.0.0.1:50081
     log: info
-
-  # ── soma ────────────────────────────────────────────────────────────
-  # 本体描述 + primitive/skill 编排服务。v2 flat schema（2026-07
-  # PR #109 review 后落地），四个字段：
-  #   atlas_endpoint / listen / provider_id / robot_yaml
-  #
-  # 提供 atlas 上两条 gRPC cap：
-  #   robonix/system/soma/get_yaml   — 读 soma.yaml 的 body description
-  #   robonix/system/soma/get_urdf   — 读 URDF（XML）
-  # 给 pilot/scene 等消费者用。
-  #
-  # 设计:        docs/Robonix 开发文档.md §五
-  # 两阶段说明:  ../docs/soma_two_stage_bringup.md（§12 是 v2 变更）
-  # 部署 cheatsheet: ./SOMA_DEPLOY.md
-  #
-  # ─── soma 在 rbnx 启动链中的位置 ────────────────────────────────────
-  # soma 是 rbnx 的 SYSTEM_BUILTIN。rbnx boot 用 `spawn_soma_binary`
-  # 特化 fork：建 `pipe(2)`，pre_exec 把读端 dup2 到 fd 3，设
-  # `ROBONIX_SOMA_STAGE_FD=3`；rbnx 父进程保留写端做 stage 2 trigger。
-  # 翻译规则在 deploy.rs 的 `"soma" =>` 分支，支持的 CLI flag：
-  #   --listen / --atlas / --provider-id / --robot-yaml / --config / --log
-  #
-  # ─── soma 启动后做的事（两阶段 bring-up，v2 模型） ─────────────────
-  # stage 1（soma 进程启动初期）：
-  #   1) 从 --robot-yaml 加载单个 robot 的 soma.yaml + URDF。
-  #   2) 从 robot_yaml 所在目录读同目录的 robonix_manifest.yaml，
-  #      对 primitive 段 spawn `rbnx start -p <pkg> --endpoint <atlas>`
-  #      → 等 atlas 注册 → CMD_INIT → CMD_ACTIVATE。
-  #   3) 向 atlas 注册自身的 get_yaml / get_urdf 两个 gRPC cap 并 ACTIVE。
-  #   4) 用 `tokio::fs::File::from_std` 把 fd 3 包成 async file，
-  #      `BufReader::read_line` 挂起等 `stage2\n`。
-  # stage 2（rbnx 起完 service: 段后往 pipe 写 `stage2\n` 触发）：
-  #   1) 对 skill 段：spawn → CMD_INIT，**不** ACTIVATE。
-  #   2) skill 留在 INACTIVE，由 executor 在 MCP 工具被首次调用时
-  #      再发 CMD_ACTIVATE。
-  #
-  # 也就是说：**rbnx boot 已经不再起 primitive / skill 段**。本
-  # manifest 有 primitive（orbbec/piper/描述/handeye）和 skill 计划，
-  # 所以**必须**起 soma；否则机器人不会动。
-  #
-  # 部署机上必须已 `make install` 整套源码（不能单独 cargo install
-  # robonix-soma），原因见 SOMA_DEPLOY.md。
   soma:
     listen: 127.0.0.1:50091
     log: info
     provider_id: soma
-    # `robot_yaml` 和 `config` 都由 rbnx 原样透传给 robonix-soma CLI，
-    # 且 rbnx 不 chdir，所以到达 soma 的必须是绝对路径。为了避免把
-    # 操作员的 HOME 写死，rbnx 在 `ensure_soma_defaults` 里对这两个
-    # 字段做了自动路径规范化（见 robonix/tools/rbnx/src/cmd/deploy.rs）：
-    #   * 绝对路径 → 原样保留（bind-mount / /opt 等 override 用）；
-    #   * 相对路径（含裸文件名） → join 到本 manifest 所在目录。
-    # 所以下面直接写相对本文件的路径即可，跨机克隆到任何目录都能跑。
     robot_yaml: soma.yaml
-    # config 里的字段和上面重复没关系（CLI > config）；保留 --config
-    # 是为了 `robonix-soma --config <abs>` 本地手工调试也能跑。
     config: soma_config.local.yaml
 
-  # Non-builtin system services. rbnx boot resolves these by name to
-  # `<robonix_source>/system/<key>/`. Currently only memory/ /
-  # scene/ / speech/ are shipped under that path. For Stage 0 we
-  # only need memory (used by pilot for chat history). scene and
-  # speech are heavyweight (need docker / weights / mics) and
-  # intentionally omitted until later stages need them.
-  # memory:
-  #   backend: sqlite
-  #   log: info
-
-# ─── Packages ──────────────────────────────────────────────────────
-# Filled in stage-by-stage — see MIGRATION_PLAN.md.
-
 primitive:
-  # ── Stage 1: Orbbec Dabai DCW RGBD camera ─────────────────────────
-  # Owns primitive/camera/*. Wraps `orbbec_camera dabai_dcw.launch.py`,
-  # waits for first RGB frame, then atlas-declares rgb / depth /
-  # camera_info on /camera/{color,depth}/*. Must stay FIRST among the
-  # primitives that consume `primitive/camera/*` indirectly (none here
-  # yet — llm_detect / yolo_grasp consume it from the service: block;
-  # 垂直抓取模式下 depth 流其实用不到，但保留发布不影响 sentinel）。
-  #
+  # Orbbec Dabai DCW RGB camera. Depth is disabled for vertical grasp.
   - name: orbbec_camera
     url: https://github.com/lhw2002426/OrbbecSDK_rbnx
     branch: main
     config:
-      camera_name: camera             # ROS namespace; topic prefix
-      depth_registration: true        # HW-align depth pixels to color frame
-      enable_d2c_viewer: false        # debug RViz off in deploy
-      color_width: 640
-      color_height: 480
-      color_fps: 10                   # dabai_dcw firmware default
+      camera_name: camera
+      enable_depth: false
+      depth_registration: false
+      enable_d2c_viewer: false
+      color_width: 1280
+      color_height: 720
+      color_fps: 10
       depth_width: 640
       depth_height: 400
       depth_fps: 10
       sentinel_timeout_s: 30.0
-      # serial_number: ""             # uncomment to pin to a specific device
-      # usb_port: ""
 
-  # ── Stage 2: AgileX Piper 6-DoF arm ───────────────────────────────
-  # Owns primitive/arm/*. Wraps `piper start_single_piper.launch.py`,
-  # waits for first /arm/joint_states_single, then atlas-declares
-  # joint_states / arm_status / end_pose / pos_cmd. Stage 3A
-  # piper_description consumes joint_states for robot_state_publisher;
-  # Stage 5 piper_moveit publishes to pos_cmd; Stage 6 pick_skill
-  # polls arm_status. So this MUST come before all of those in YAML
-  # order.
-  #
-  # Ordering vs orbbec_camera: both are independent primitives — TF
-  # subtrees from piper_description (uses joint_states) and the camera
-  # are disjoint. Either order works for boot; we keep camera first
-  # only because it warms up the slower (~3-5s sentinel) of the two.
-  #
-  # CAN bring-up: this manifest takes the recommended path (Path A in
-  # the package README) — assume can_piper is already up. Run
-  # `bash ../packages/piper_ctl_rbnx/scripts/can_activate.sh \
-  #     can_piper 1000000 "1-4.2:1.0"`
-  # ONCE per host boot, ahead of `rbnx boot`. Set auto_can_setup=true
-  # below to delegate that to the package itself (requires passwordless
-  # sudo).
+  # Piper control must start before piper_description and roboarm_ik.
   - name: piper_ctl
     url: https://github.com/lhw2002426/piper_ctl_rbnx
     branch: main
     config:
       can_port: can_piper
       can_bitrate: 1000000
-      can_usb_address: "1-4.4:1.0"  # set when the host has > 1 CAN device
-      auto_can_setup: false           # see "CAN bring-up" in package README
+      can_usb_address: "1-4.4:1.0"
+      auto_can_setup: false
       auto_enable: true
       gripper_exist: true
-      gripper_val_mutiple: 2          # upstream typo preserved
+      gripper_val_mutiple: 2
       sentinel_timeout_s: 30.0
 
-  # ── Stage 3A: Piper URDF + robot_state_publisher ──────────────────
-  # Owns no atlas-routed contracts (capabilities: []). Publishes the
-  # joint-driven TF subtree:
-  #   base_link → link1 → ... → link6
-  # by running robot_state_publisher with the vendored Piper URDF
-  # remapping `joint_states` to `/arm/joint_states_single`.
-  #
-  # MUST come AFTER piper_ctl in this list — piper_ctl is what
-  # publishes the JointState messages this RSP subscribes to. Without
-  # a JointState producer, RSP stays quiet on /tf and nothing
-  # downstream that does TF lookups (yolo_grasp's grasp-pose →
-  # base-frame transform) will work.
-  #
+  # Publishes the Piper TF tree from /arm/joint_states_single.
   - name: piper_description
     url: https://github.com/lhw2002426/piper_description_rbnx
     branch: main
-    config: {} 
-  # — package has no Driver(CMD_INIT) handler, 
-  # so theconfig block is ineffective. URDF variant is selected via the
-  # top-level env: PIPER_URDF_PATH (default: with-gripper variant).
+    config: {}
 
-  # ── Stage 3B: hand-eye calibration TF ─────────────────────────────
-  # Owns no atlas-routed contracts (capabilities: []). Publishes the
-  # static hand-eye TF:
-  #   link6 → camera_color_optical_frame
-  # by vendoring upstream easy_handeye2 + easy_handeye2_msgs and
-  # running `ros2 launch easy_handeye2 publish.launch.py
-  # name:=<name>`. The vendored handeye_publisher reads
-  # `~/.ros2/easy_handeye2/calibrations/<name>.calib` (upstream
-  # hardcodes that path), so the package's atlas_register_and_launch
-  # script first stages config/calibrations/<name>.calib there.
-  #
-  # Order vs piper_description: independent — the two packages emit
-  # disjoint /tf_static subtrees. Putting easy_handeye2 after
-  # piper_description is just for readability (the chain conceptually
-  # builds outward from base_link).
-  #
-  # ⚠️ CALIB IS A PLACEHOLDER. The vendored
-  #    config/calibrations/my_eih_calib.calib ships an identity
-  #    transform with eye_in_hand metadata. Replace before running
-  #    on real hardware — see the package README "Replacing the
-  #    calibration" section.
-  #
-  # Calib name override goes in the top-level env: block above
-  # (EASY_HANDEYE2_CALIB_NAME / EASY_HANDEYE2_CALIB_PATH). NOT here
-  # — this package has no Driver(CMD_INIT) handler, so the per-
-  # package config: block is ignored.
-  #
-  - name: easy_handeye2
-    url: https://github.com/lhw2002426/easy_handeye2_rbnx
-    branch: main
-
-# service:
 service:
-  # ── Stage 4A: LLM-VLM 目标检测（垂直抓取 pipeline 的 perception 入口） ───
-  # 走 llm_detect_rbnx（feature/vertical-grasp 分支）。相比原 yolo_world：
-  #   * 不再依赖 GPU / ultralytics 权重；
-  #   * RGB → OpenAI-compatible VLM → 2D bbox；
-  #   * 在垂直抓取模式下，depth 流完全不用（skip_depth=true），
-  #     从桌面 z 常量 + 相机射线反投影出抓取点。
-  # 老 yolo_world 服务已被替代，不再启用。
-  #
-  # Atlas 上游：primitive/camera/rgb + primitive/camera/camera_info。
-  # depth 由 skip_depth 直接跳过订阅。
-  #
-  # Order: MUST come AFTER orbbec_camera（消费 camera 流）。
-  #
+  # RGB image -> VLM bbox. Depth is intentionally skipped.
   - name: llm_detect
     url: https://github.com/lhw2002426/llm_detect_rbnx
     branch: feature/vertical-grasp
     config:
-      # LLM API endpoint (OpenAI-compatible)
       llm_base_url: "https://api.ofox.ai/v1"
-      llm_api_key: "sk-of-WmCvqhOuLuBxAExANMYGsYKajzuhTYyxAMuofRRdDbQnlKNUsYdPHAmizheeamZb"
-      llm_model: "google/gemini-3.1-flash-lite"
-      temperature: 0.7
-
-      # Set to true if camera is mounted opposite to arm (image needs
-      # 180° rotation before sending to LLM)
+      llm_api_key: "sk-of-ROohIhJiJnwcuekrSZdCrGaaeNNUrKADBAqkotwWqnYKNuKldFQTIeoddsRzGYBx"
+      llm_model: "google/gemini-3.5-flash"
+      llm_timeout_s: 60.0
+      temperature: 0.0
       rotation_cam2arm: true
-
-      # 垂直抓取模式：跳过 depth 订阅与反投影，抓取点由 yolo_grasp
-      # 依据桌面 z 常量 + 相机射线交点算出。config 优先，env
-      # LLM_DETECT_SKIP_DEPTH=1 为 fallback。
       skip_depth: true
-
-      # Topic overrides — 空表示 atlas-resolve；默认值已匹配
-      # OrbbecSDK_rbnx，piper_grasp_deploy 下留空即可。
       rgb_topic: ""
       camera_info_topic: ""
-      # depth_topic 在 skip_depth=true 下无效，故省略。
 
-  # ── Stage 4B: 垂直抓取 grasp-pose 计算器 ───────────────────────────
-  # Pure CPU。Owns service/perception/grasp_pose/*。整个算法已从原
-  # PLACEHOLDER 换成 feature/vertical-grasp 分支的固定 top-down 方案：
-  #   * xy: LLM bbox 中心像素 → 通过相机内参反投影一条射线 → 与桌面
-  #     z=z_table 平面求交，得到 base_link 系下的 (x, y)；
-  #   * z: 固定为配置常量 z_table + z_offset；
-  #   * orientation: 固定 roll=π / pitch=0 / yaw=default_yaw_rad；
-  #   * 夹爪开口: default_gripper_width；
-  #   * 三段动作序列（pre-grasp / grasp / post-grasp）交给 pick_skill
-  #     组织，approach_dist 是 pre/post 的 z 抬升量。
-  # 上游：llm_detect 的 bbox + easy_handeye2/piper_description 建的
-  # TF 树（base_frame ← camera_frame）。
-  #
-  # Order: MUST come AFTER llm_detect（consumes 其检测结果）。
-  #
-  - name: yolo_grasp
-    url: https://github.com/lhw2002426/yolo_grasp_rbnx
-    branch: feature/vertical-grasp
+  # Bbox center -> arm/base_link top-down grasp pose.
+  - name: grasp_pose
+    path: ./rbnx-boot/cache/grasp_pose_rbnx
     config:
-      # ── 垂直抓取参数（feature/vertical-grasp 分支新增） ──
-      # 桌面在 base_link 系下的 z（米）。必须用现场 tf2_echo 实测：
-      #   ros2 run tf2_ros tf2_echo arm/base_link <table_marker_link>
-      # 或直接尺量后填。z 错了要么抓空要么撞桌，是本 pipeline 最关键
-      # 的物理常量。
-      # 现场实测（2026-07-05）：夹爪指尖触地时 tf2_echo arm/base_link
-      # → arm/link6 的 z = -0.186。MoveIt 规划目标即 arm/link6 原点，
-      # 所以这里直接填 link6 触地高度，不做 TCP 长度补偿。
-      z_table: -0.186
-      z_offset: 0.0                       # z_table 之上的补偿，一般 0
-      approach_dist: 0.10                 # pre/post 抬升，米
-      default_yaw_rad: 0.0                # 抓取时末端 yaw；0=沿 base_x
-      # 方案 A（防翻手腕，j6 分支选择）：开启后忽略 default_yaw_rad，
-      # 用 atan2(y_base, x_base) 作为 yaw，使夹爪开口沿"基座→目标"
-      # 径向对齐。这样 j6 的可行区间被大幅收窄，MoveIt IK 不再容易
-      # 挑到 j6 ± π 的翻腕解。若希望开口方向再旋转 π/2（横向夹取），
-      # 把 radial_yaw_offset_rad 设为 1.5708；反向则 -1.5708。
-      radial_yaw: true
-      radial_yaw_offset_rad: 0.0
-      default_gripper_width: 0.04         # 目标开口宽度，米
-      base_frame: "arm/base_link"
-      camera_frame: "camera_color_optical_frame"
-      camera_info_topic: "/camera/color/camera_info"
+      hand_eye_calibration_file: ../../hand-eye-data/2d_homography.npy
+      default_desktop_height: -0.19
+      catch_offset: 0.00
+      box_rotation_deg: 0.0
       output_frame: "arm/base_link"
+      approach_dist: 0.10
 
-  # ── Stage 5: MoveIt + grasp executor ──────────────────────────────
-  # Owns service/manipulation/*. Wraps the upstream MoveIt config
-  # (piper_with_gripper_moveit) + the C++ moveit_control_node_yolo
-  # grasp executor. Adds the atlas-routed `execute_grasp` MCP tool.
-  #
-  # Stage 5's core risk avoidance: zero modifications to the C++
-  # source. The MCP handler bridges via the legacy ROS topic
-  # /graspnet/grasps + polls /arm/arm_status for busy→idle. See
-  # the package README for the full design rationale, the launch
-  # fork explanation, and the link6 ↔ arm/link6 TF bridge trick.
-  #
-  # Order: MUST come AFTER piper_ctl (sentinel waits for first
-  # /arm/arm_status sample, which only piper_ctl publishes) and
-  # AFTER easy_handeye2 (its static link6 → camera_color_optical_frame
-  # TF is needed for the cpp's tf2 transform inside execute_grasp).
-  # piper_description is also a dep (provides the unprefixed TF
-  # subtree). Order vs llm_detect / yolo_grasp doesn't matter
-  # (manipulation has no perception dep at boot time).
-  #
-  - name: piper_moveit
-    url: https://github.com/lhw2002426/piper_moveit_rbnx
-    branch: main
+  # Executes explicit MCP execute_grasp/reset calls from pick_skill.
+  - name: roboarm_ik
+    path: ./rbnx-boot/cache/roboarm_ik_rbnx
     config:
-      arm_group_name:       arm
-      end_effector_link:    link6      # in prefixed TF subtree
-      gripper_action_name:  /gripper_controller/follow_joint_trajectory
-      sentinel_timeout_s:   60.0           # launch + first arm_status
+      teach_safe_joints_deg: [0.0, 0.0, 0.0, 0.0, 25.0, 0.0]
+      teach_safe_gripper_width: 0.04
 
-  # ── openvla_client：与垂直抓取 pipeline 互斥，本 manifest 关闭 ─────
-  # openvla_client 独占 /arm/pos_cmd 做 2Hz 闭环推理，会跟 piper_moveit
-  # 的 execute_grasp 撞车。垂直抓取 pipeline 起效时必须关掉它；如要跑
-  # VLA 演示，反过来注释掉 llm_detect / yolo_grasp / piper_moveit / pick。
-  # 未来考虑拆成 robonix_manifest.grasp.yaml / robonix_manifest.vla.yaml
-  # 两份，用 symlink 切换。
-  #
-  # - name: openvla_client
-  #   url: https://github.com/lhw2002426/vla_client_rbnx
-  #   branch: main
-  #   config:
-  #     vla_server_url: "http://162.105.88.184:8777"
-  #     full_image_topic: /exterior_camera/color/image_raw
-  #     wrist_image_topic: /camera/color/image_raw
-  #     joint_states_topic: /arm/joint_states_single
-  #     pos_cmd_topic: /arm/pos_cmd
-  #     action_hz: 2
-  #     action_min: [-28042, 80978, -98976, -772.51, 49456.09, -29964, -400]
-  #     action_max: [4566, 122947, -63015, 3498, 68869.87, 14980, 84500]
-  #     hw_action_min: [-31400, 0, -150000, -90000, 0, -90000, -500]
-  #     hw_action_max: [31400, 180000, 0, 90000, 72000, 90000, 90000]
-  #     max_delta_per_step_sdk: [5000, 5000, 5000, 5000, 5000, 5000, 15000]
-  #     action_steps_to_execute: 5
-
-
-# skill:
 skill:
-  # ── Stage 6: pick-up-named-object skill ───────────────────────────
-  # The LLM-facing entry point of the whole pipeline. Owns
-  # robonix/skill/pick/*. Orchestrates llm_detect + yolo_grasp +
-  # piper_moveit into a single user-invocable `pick(object_name)`
-  # MCP tool. All upstream calls go over MCP HTTP (atlas-resolved
-  # at on_activate time) — no fallback to the legacy ROS service
-  # path. See package README for full semantics.
-  #
-  # Lazy activate: rbnx boot leaves the skill in INITIALIZED state.
-  # The executor sends Driver(CMD_ACTIVATE) on the first MCP call,
-  # at which point the skill blocks up to 60s waiting for atlas to
-  # resolve all three upstream services. So all of llm_detect,
-  # yolo_grasp, and piper_moveit MUST be ACTIVE before the user
-  # hits this skill — but we don't enforce it at boot order; if
-  # they're not ready, the first pick() call fails fast with a clear
-  # "missing dependencies" message.
-  #
-  # Order in this list: skills come AFTER all primitives + services
-  # in rbnx boot's spawn order, but pick has no boot-time
-  # dependency on its upstreams (lazy-activate sees to that). So
-  # the order requirement is "after everything else", which is
-  # naturally satisfied by being in the skill: block.
-  #
-  # 垂直抓取 pipeline 下 pick 的三段动作序列（pre-grasp → grasp →
-  # post-grasp）在 feature/vertical-grasp 分支实现；配合
-  # yolo_grasp 的 approach_dist 使用。
-  #
+  # User-facing pick(object_name) skill.
   - name: pick
     url: https://github.com/lhw2002426/pick_skill_rbnx
     branch: feature/vertical-grasp
-    config:
-      default_timeout_s:    60.0     # used when caller passes 0
-      default_max_retries:  5        # used when caller passes 0
-

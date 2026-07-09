@@ -22,12 +22,13 @@
 - [ ] CAN 已 up（`ip link show can_piper` 有 `UP`）；如未 up，先跑
       `bash /Users/howenliu/lab/packages/piper_ctl_rbnx/scripts/can_activate.sh can_piper 1000000 "1-4.4:1.0"`。
 - [ ] **垂直抓取版新增前置**：本 manifest 现在把 `llm_detect` /
-      `yolo_grasp` / `pick` 三个包指向 `branch: feature/vertical-grasp`。
+      `pick` 指向 `branch: feature/vertical-grasp`，`grasp_pose` 使用本地
+      `rbnx-boot/cache/grasp_pose_rbnx`。
       这三条分支目前只在本机 `packages/*_rbnx/` 里，**尚未推送到
       GitHub**。`rbnx boot` 会 `git clone -b feature/vertical-grasp`，
       分支不存在会直接 fail。上机前必须：
       ```bash
-      for pkg in llm_detect_rbnx yolo_grasp_rbnx pick_skill_rbnx; do
+      for pkg in llm_detect_rbnx pick_skill_rbnx; do
           git -C /Users/howenliu/lab/packages/$pkg push -u origin feature/vertical-grasp
       done
       ```
@@ -35,8 +36,8 @@
       改回 `branch: main` 即可。
 - [ ] **openvla_client 已在本 manifest 关闭**（与 grasp pipeline
       互斥，见 `robonix_manifest.yaml` 里 `openvla_client` 段的注释）。
-      如需切回 VLA 演示，反过来把 llm_detect / yolo_grasp /
-      piper_moveit / pick 都注释掉、解注释 openvla_client。
+      如需切回 VLA 演示，反过来把 llm_detect / grasp_pose /
+      roboarm_ik / pick 都注释掉、解注释 openvla_client。
 
 ## 0.5 启动机制速览（Piper 侧一份，源码事实同 ranger）
 
@@ -53,11 +54,11 @@ rbnx boot
   │   本 manifest 目前不启用（memory/scene/speech 都注释掉了）
   │
   ├─ soma stage 1（soma 自己起，rbnx 不管这段）
-  │   primitive: orbbec_camera → piper_ctl → piper_description → easy_handeye2
+  │   primitive: orbbec_camera → piper_ctl → piper_description
   │   每个都 spawn + wait_for_registration + CMD_INIT + CMD_ACTIVATE
   │
   ├─ service 阶段（rbnx spawn + Driver(CMD_INIT)）
-  │   llm_detect → yolo_grasp → piper_moveit
+  │   llm_detect → grasp_pose → roboarm_ik
   │   （openvla_client 已在本 manifest 注释；与 grasp pipeline 互斥）
   │
   ├─ stage 2 trigger
@@ -198,18 +199,18 @@ grpcurl -plaintext -d '{"robot_id":""}' 127.0.0.1:50091 \
 # 期望：urdf_xml 包含 <robot name="piper"> 和 link name="link6"
 
 # 4) primitive 段（soma stage 1 起）应该都 ACTIVE
-rbnx caps -v | grep -E 'orbbec_camera|piper_ctl|piper_description|easy_handeye2'
+rbnx caps -v | grep -E 'orbbec_camera|piper_ctl|piper_description'
 # 期望：orbbec_camera / piper_ctl 显示 ACTIVE；
-#       piper_description / easy_handeye2 是 capabilities: []，
-#       在 atlas 上只有 provider registration 没有 cap，rbnx caps -v
-#       里体现为 provider ACTIVE + no capability rows。
+#       piper_description 是 capabilities: []，在 atlas 上只有 provider
+#       registration 没有 cap，rbnx caps -v 里体现为 provider ACTIVE +
+#       no capability rows。
 
 # 5) service 段（rbnx 起，垂直抓取 pipeline 三件套）
-rbnx caps -v | grep -E 'llm_detect|yolo_grasp|piper_moveit'
+rbnx caps -v | grep -E 'llm_detect|grasp_pose|roboarm_ik'
 # 期望：三者全部 ACTIVE。
 #   * llm_detect  → service/perception/object_detect/*  ACTIVE
-#   * yolo_grasp  → service/perception/grasp_pose/*     ACTIVE
-#   * piper_moveit → service/manipulation/execute_grasp ACTIVE
+#   * grasp_pose  → service/perception/grasp_pose/*     ACTIVE
+#   * roboarm_ik  → service/manipulation/execute_grasp ACTIVE
 
 # 6) skill 段：pick 由 soma stage 2 spawn + CMD_INIT，
 #              但 CMD_ACTIVATE 由 executor 在首次 MCP 调用时才发。
@@ -231,24 +232,22 @@ rbnx caps -v | grep pick
 | soma stage 1 卡在 `waiting for provider ... to register` | orbbec 或 piper_ctl 没起来 | 看对应包的 `rbnx-boot/logs/<name>.log`；orbbec 常见 USB 权限，piper_ctl 常见 CAN 没 up |
 | stage 2 trigger 后 soma 没起 skill | pick 段被人为再次注释 / feature 分支未推送导致 git clone 失败 | 看 `rbnx-boot/logs/pick.log`；确认 §0 前置条件里的 `feature/vertical-grasp` 已 `git push` 到 origin |
 | `rbnx caps` 里 `llm_detect` 报 401 / connection refused | `robonix_manifest.yaml` 里的 `llm_api_key` 无效或 base_url 不通 | 换有效 key；离线联调可临时把 `llm_base_url` 指向本地 OpenAI-compatible 服务 |
-| `yolo_grasp` 日志报 `TF lookup arm/base_link ← camera_color_optical_frame timed out` | easy_handeye2 未起 / 静态 TF 没发布 | `rbnx caps -v \| grep easy_handeye2` 应 ACTIVE；或 `ros2 run tf2_ros tf2_echo arm/base_link camera_color_optical_frame` 手工验证 |
-| pick 一直落空 / 撞桌 | yolo_grasp 的 `z_table` 参数与实际桌面高度不符 | 用 `ros2 run tf2_ros tf2_echo arm/base_link <table_marker>` 实测桌面 z，改 `robonix_manifest.yaml` 里 `yolo_grasp.config.z_table`；抬升可用 `z_offset` 微调 |
+| `grasp_pose` 日志报 `hand_eye_calibration_file does not exist` 或 homography 维度错误 | 2D 标定文件缺失 / 路径错 / 文件不是 3x3 homography | 检查 `robonix_manifest.yaml` 里 `grasp_pose.config.hand_eye_calibration_file`，必要时重跑 `tools/calibrate_handeye_2d.py` |
+| pick 一直落空 / 撞桌 | 2D homography 已过期，或 `default_desktop_height` 与实际桌面高度不符 | 重新标定 `rbnx-boot/hand-eye-data/2d_homography.npy`；调整 `robonix_manifest.yaml` 里 `grasp_pose.config.default_desktop_height` |
 
 ## 4. 后续
 
-- 本 manifest 已启用垂直抓取 pipeline（`llm_detect` + `yolo_grasp` +
-  `piper_moveit` + `pick`），`openvla_client` 已注释。若要切回 VLA
+- 本 manifest 已启用垂直抓取 pipeline（`llm_detect` + `grasp_pose` +
+  `roboarm_ik` + `pick`），`openvla_client` 已注释。若要切回 VLA
   演示：注释掉这四个包、解注释 `openvla_client`，同时把 `soma.yaml`
   的 `description.can_do` / `cannot_do` / `notes` 段一起翻回 VLA 版本
   —— 那些描述是给 pilot 的 LLM 看的，撒谎的代价是 pilot 可能编造出
   实际跑不动的工具组合。
-- 三个 `feature/vertical-grasp` 分支合并回 `main` 之后，把
-  `robonix_manifest.yaml` 里 `llm_detect` / `yolo_grasp` / `pick`
-  三处 `branch: feature/vertical-grasp` 改回 `branch: main`。
-- `yolo_grasp.config.z_table` 是本 pipeline 最关键的物理常量——出厂
-  默认 `0.02 m` 只是占位，上机前务必用 `tf2_echo` 或尺子在真实桌面
-  上测一次并回写。同时 `default_yaw_rad` / `default_gripper_width`
-  会随物体形状调，建议在 SOP 里加一步"标定桌面"。
+- `llm_detect` / `pick` 的 `feature/vertical-grasp` 分支合并回 `main`
+  之后，把对应 `branch:` 改回 `main`；`grasp_pose` 当前走本地 path。
+- `grasp_pose.config.default_desktop_height` 是本 pipeline 最关键的物理常量。
+  上机前务必用真实桌面高度校准并回写。同时确认
+  `hand_eye_calibration_file` 指向最新的 2D homography。
 - `pick` 走 lazy activate，`rbnx caps` 会显示 INACTIVE 直到 pilot
   首次 MCP 调用；不用手工预热。
 - 若要拿掉 gripper，照 `urdf/README.md` 里的 "Swapping to the

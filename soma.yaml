@@ -14,8 +14,8 @@
 #   - Design:            /Users/howenliu/lab/docs/soma_two_stage_bringup.md §12
 #   - Ranger sibling:    /Users/howenliu/lab/ranger_mini_deploy/soma.yaml
 #   - Component tree:    matches package_manifest.yaml provider_ids of
-#                        orbbec_camera / piper_ctl / piper_description /
-#                        easy_handeye2 in /Users/howenliu/lab/packages/*_rbnx/
+#                        orbbec_camera / piper_ctl / piper_description in
+#                        /Users/howenliu/lab/packages/*_rbnx/
 
 urdf:
   # Path is resolved relative to this YAML file's directory (soma
@@ -93,18 +93,19 @@ tree:
 
     - id: wrist_camera
       part_type: sensor
-      human_label: "Orbbec Dabai DCW eye-in-hand RGBD (link6-mounted, static TF via easy_handeye2)"
-      # The realsense/orbbec driver publishes the optical child link
-      # `camera_color_optical_frame` itself; easy_handeye2 owns the
-      # static edge link6 → camera_color_optical_frame. We anchor the
-      # tree at that edge's parent link.
+      human_label: "Orbbec Dabai DCW eye-in-hand RGBD (2D homography calibrated)"
+      # Current vertical-grasp deploy does not run easy_handeye2 or
+      # consume a link6 -> camera_color_optical_frame TF edge. grasp_pose
+      # maps RGB bbox pixels directly to arm/base_link XY with
+      # rbnx-boot/hand-eye-data/2d_homography.npy, then uses
+      # default_desktop_height as the grasp Z.
       link: link6
       sensor:
         modality: rgbd
         placement: end_effector_wrist
         # Dabai DCW datasheet numbers — match orbbec_camera's config
         # block in robonix_manifest.yaml.
-        resolution: [640, 480]
+        resolution: [1280, 720]
         framerate_hz: 10
         depth_range_m: [0.2, 3.0]
       provided_by:
@@ -119,30 +120,31 @@ description:
   summary: >-
     Table-top manipulation cell. A 6-DoF AgileX Piper arm with a
     factory two-finger parallel gripper, plus an eye-in-hand Orbbec
-    Dabai DCW RGBD camera (static TF via easy_handeye2 calibration).
+    Dabai DCW RGBD camera.
     Currently configured for the vertical-grasp pipeline: llm_detect
-    (VLM-based 2D detection on wrist RGB) → yolo_grasp (fixed top-down
-    pose from bbox center + configured table z) → piper_moveit
-    (MoveIt-planned execute_grasp) → pick skill. Depth stream is
+    (VLM-based 2D detection on wrist RGB) → grasp_pose (fixed top-down
+    pose from bbox center + calibrated 2D homography + configured table z)
+    → roboarm_ik
+    (Python IK execute_grasp) → pick skill. Depth stream is
     unused. No mobile base.
   can_do:
     - "Command joint positions on the Piper via primitive/arm/pos_cmd."
     - "Read arm proprioception (joint_states, end_pose, arm_status)."
     - "Capture eye-in-hand RGB from the Orbbec Dabai DCW."
     - "Detect table-top objects by name via llm_detect (LLM VLM on RGB; depth stream is unused in this manifest)."
-    - "Grasp table-top objects with a fixed vertical top-down approach — xy from LLM bbox + camera ray-plane intersection at z=z_table, orientation locked to roll=π/pitch=0."
-    - "Plan collision-aware arm motions to the computed grasp pose via piper_moveit / execute_grasp."
+    - "Grasp table-top objects with a fixed vertical top-down approach — xy from LLM bbox + calibrated 2D homography, orientation locked vertical-down with yaw derived from the bbox long edge."
+    - "Execute top-down grasp poses via roboarm_ik / execute_grasp, publishing joint and gripper commands through piper_ctl."
   cannot_do:
     - "Drive around — this deploy has no mobile base."
     - "Grasp objects with arbitrary 6-DoF poses — this deploy only does vertical top-down grasps."
-    - "Grasp objects standing/lying above or below the reachable table plane — z is clamped to a single configured constant (z_table)."
+    - "Grasp objects standing/lying above or below the reachable table plane — z is clamped to a single configured constant (default_desktop_height)."
     - "Grasp transparent/reflective objects reliably — LLM detection may still fail, but at least depth artifacts are no longer a failure mode (depth is not used)."
     - "See any scene outside the wrist camera's FOV."
-    - "Run closed-loop VLA policies — openvla_client is disabled in this manifest to keep /arm/pos_cmd owned by piper_moveit."
+    - "Run closed-loop VLA policies — openvla_client is disabled in this manifest to keep /arm/pos_cmd owned by roboarm_ik."
   notes:
     - "The vendored URDF is the WITH-GRIPPER variant (joint1..joint8; joint7/joint8 are the gripper fingers). Override to no-gripper via env PIPER_URDF_PATH in robonix_manifest.yaml if a naked arm is needed."
-    - "Hand-eye calibration (link6 → camera_color_optical_frame) is a PLACEHOLDER — see easy_handeye2_rbnx README. Vertical grasp relies on this TF as the ONLY spatial link between camera pixels and base_link, so it MUST be replaced with a real calibration before running on hardware."
-    - "z_table (yolo_grasp config, default 0.02 m) is the physical table height in base_link frame. Measure it on-site with `ros2 run tf2_ros tf2_echo arm/base_link <table_marker>` or a tape and update the manifest — a wrong z_table causes empty grasps or table collisions."
-    - "llm_detect uses skip_depth=true: depth topic is not subscribed and depth-based fallback is disabled. Grasp geometry comes entirely from RGB bbox + camera ray → z_table plane intersection."
-    - "openvla_client is commented out in this manifest (was the previous demo path). Do NOT re-enable it while llm_detect / yolo_grasp / piper_moveit are active — both would write to /arm/pos_cmd concurrently."
+    - "2D hand-eye calibration is loaded by grasp_pose from rbnx-boot/hand-eye-data/2d_homography.npy. Re-run tools/calibrate_handeye_2d.py if the camera mount, observe pose, or workspace layout changes."
+    - "default_desktop_height (grasp_pose config) is the final physical grasp z in arm/base_link frame. A wrong value causes empty grasps or table collisions."
+    - "llm_detect uses skip_depth=true: depth topic is not subscribed and depth-based fallback is disabled. Grasp geometry comes from RGB bbox + 2D homography + default_desktop_height."
+    - "openvla_client is commented out in this manifest (was the previous demo path). Do NOT re-enable it while llm_detect / grasp_pose / roboarm_ik are active — both would write to /arm/pos_cmd concurrently."
     - "Soma v2 flat schema: this file is served verbatim; only urdf.path and robot.id are parsed. The tree / description sections are for LLM context via the future soma_bridge MCP adapter."

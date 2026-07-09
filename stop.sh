@@ -41,8 +41,9 @@ _kill_term "pick_skill\.atlas_bridge"
 _kill_term "piper_moveit\.main"
 _kill_term "piper_moveit_rbnx\.launch\.py"
 _kill_term "moveit_control_node_yolo"          # the cpp grasp executor
+_kill_term "roboarm_ik\.main"
 
-_kill_term "yolo_grasp\.main"
+_kill_term "grasp_pose\.main"
 _kill_term "yolo_world\.main"
 _kill_term "llm_detect\.main"
 
@@ -94,7 +95,8 @@ _kill_kill "pick_skill\.atlas_bridge"
 _kill_kill "piper_moveit\.main"
 _kill_kill "piper_moveit_rbnx\.launch\.py"
 _kill_kill "moveit_control_node_yolo"
-_kill_kill "yolo_grasp\.main"
+_kill_kill "roboarm_ik\.main"
+_kill_kill "grasp_pose\.main"
 _kill_kill "yolo_world\.main"
 _kill_kill "llm_detect\.main"
 _kill_kill "easy_handeye2_rbnx/scripts/atlas_register_and_launch\.py"
@@ -116,16 +118,16 @@ _kill_kill "rbnx[ -]boot"
 
 # ─── 6) report ──────────────────────────────────────────────────────
 sleep 0.5
-remaining=$(pgrep -f \
-    'pick_skill\.atlas_bridge|piper_moveit\.main|piper_moveit_rbnx\.launch|moveit_control_node_yolo|yolo_grasp\.main|yolo_world\.main|llm_detect\.main|easy_handeye2_rbnx/scripts/atlas_register|piper_description_rbnx/scripts/atlas_register|piper_ctl\.main|orbbec_camera\.main|dabai_dcw\.launch|start_single_piper\.launch|piper_urdf\.launch|easy_handeye2 publish\.launch|handeye_publisher|robonix\.system\.|rbnx-cli.*boot|rbnx[ -]boot' \
-    2>/dev/null | wc -l | tr -d ' ')
+remaining=$({ pgrep -f \
+    'pick_skill\.atlas_bridge|piper_moveit\.main|piper_moveit_rbnx\.launch|moveit_control_node_yolo|roboarm_ik\.main|grasp_pose\.main|yolo_world\.main|llm_detect\.main|easy_handeye2_rbnx/scripts/atlas_register|piper_description_rbnx/scripts/atlas_register|piper_ctl\.main|orbbec_camera\.main|dabai_dcw\.launch|start_single_piper\.launch|piper_urdf\.launch|easy_handeye2 publish\.launch|handeye_publisher|robonix\.system\.|rbnx-cli.*boot|rbnx[ -]boot' \
+    2>/dev/null || true; } | wc -l | tr -d ' ')
 
 if [[ "$remaining" -eq 0 ]]; then
     echo "[piper-grasp/stop] all deploy processes terminated."
 else
     echo "[piper-grasp/stop] WARN: $remaining process(es) still alive:"
     pgrep -af \
-        'pick_skill\.atlas_bridge|piper_moveit\.main|piper_moveit_rbnx\.launch|moveit_control_node_yolo|yolo_grasp\.main|yolo_world\.main|llm_detect\.main|easy_handeye2_rbnx/scripts/atlas_register|piper_description_rbnx/scripts/atlas_register|piper_ctl\.main|orbbec_camera\.main|dabai_dcw\.launch|start_single_piper\.launch|piper_urdf\.launch|easy_handeye2 publish\.launch|handeye_publisher|robonix\.system\.|rbnx-cli.*boot|rbnx[ -]boot' \
+        'pick_skill\.atlas_bridge|piper_moveit\.main|piper_moveit_rbnx\.launch|moveit_control_node_yolo|roboarm_ik\.main|grasp_pose\.main|yolo_world\.main|llm_detect\.main|easy_handeye2_rbnx/scripts/atlas_register|piper_description_rbnx/scripts/atlas_register|piper_ctl\.main|orbbec_camera\.main|dabai_dcw\.launch|start_single_piper\.launch|piper_urdf\.launch|easy_handeye2 publish\.launch|handeye_publisher|robonix\.system\.|rbnx-cli.*boot|rbnx[ -]boot' \
         2>/dev/null | sed 's/^/    /'
     echo "[piper-grasp/stop] re-run stop.sh, or kill them manually."
 fi
