@@ -8,14 +8,16 @@
 #                (url: lhw2002426/{piper_description_rbnx,easy_handeye2_rbnx};
 #                 calib YAML is still an identity PLACEHOLDER — replace
 #                 before real hardware. See easy_handeye2_rbnx README.)
-#   Stage 4 ✅ — yolo_world + yolo_grasp services
-#                (url: lhw2002426/{yolo_world_rbnx,yolo_grasp_rbnx};
-#                 yolo_grasp is in PLACEHOLDER mode — every grasp_request
-#                 returns success=false until the real estimator is
-#                 wired in. See yolo_grasp_rbnx README.)
+#   Stage 4 ✅ — llm_detect + yolo_grasp services (vertical-grasp variant)
+#                (url: lhw2002426/{llm_detect_rbnx,yolo_grasp_rbnx};
+#                 both use the feature/vertical-grasp branch: llm_detect runs
+#                 VLM detection + skip_depth; yolo_grasp uses a fixed tabletop z
+#                 plus camera-ray back-projection to produce a top-down grasp
+#                 pose, replacing the old PLACEHOLDER.)
 #   Stage 5 ✅ — piper_moveit service     (url: lhw2002426/piper_moveit_rbnx)
 #   Stage 6 ✅ — pick skill — LLM-facing entry point
-#                (url: lhw2002426/pick_skill_rbnx)
+#                (url: lhw2002426/pick_skill_rbnx, feature/vertical-grasp
+#                 branch implements the pre-/grasp/post three-stage motion sequence)
 #
 # Pending hardware verification — see MIGRATION_PLAN.md tracking table.
 #
@@ -23,30 +25,34 @@
 # / skill: blocks below in dependency order (§2.2 of MIGRATION_PLAN).
 #
 # ─── Boot ordering: STRICTLY SERIAL, declaration order ─────────────
-# 自 2026-06 两阶段 bring-up 重构起（docs/soma_two_stage_bringup.md），
-# 各段的实际启动方分工是：
+# Since the 2026-06 two-stage bring-up refactor
+# (docs/soma_two_stage_bringup.md), the actual launcher split is:
 #   * builtin (atlas / executor / pilot / liaison / soma / ...)  → rbnx
 #   * primitive                                                  → soma stage 1
 #   * service                                                    → rbnx
 #   * skill (INIT only, ACTIVATE deferred to first MCP call)     → soma stage 2
 #
-# 段内顺序仍然是 STRICTLY SERIAL，依赖声明顺序：
-#   * primitive[i] 必须 CMD_INIT ok=true 才会 spawn primitive[i+1]
-#     （soma launcher.rs run_stage）；
-#   * service[i] 同理（rbnx deploy.rs）；
-#   * skill[i] 同理（soma stage 2 一个一个走 spawn + CMD_INIT）。
-# 没有 "deferred" retry —— Driver 返回 ok=false 就 fail 当前 entry，
-# soma 把对应 pgid SIGKILL 后继续下一个（不再抛全 boot fatal）。
-# rbnx 这边 service 段仍然保持原来的 ok=false → bail。So:
+# Ordering inside each block is still STRICTLY SERIAL and dependency-driven:
+#   * primitive[i] must return CMD_INIT ok=true before primitive[i+1]
+#     is spawned (soma launcher.rs run_stage);
+#   * service[i] behaves the same way (rbnx deploy.rs);
+#   * skill[i] also behaves the same way in soma stage 2
+#     (spawn + CMD_INIT one by one).
+# There is no deferred retry. If Driver returns ok=false, that entry fails.
+# soma SIGKILLs the corresponding pgid and proceeds to the next one instead
+# of raising a boot-wide fatal error. On the rbnx side, the service block
+# still keeps the older ok=false → bail behavior. So:
 #   1) put providers BEFORE consumers
 #   2) packages without a `*/driver` interface skip CMD_INIT entirely
 #      and are considered "up" the moment they register on atlas.
 #
-# ⚠️ rbnx boot 已经**不再直接**启动 primitive / skill 段。若 manifest
-# 里有 primitive 或 skill 但没有 `system.soma:` 块，rbnx 会自动注入
-# 一个 empty mapping（`ensure_soma_defaults`），soma 起来后接管两阶段；
-# 但那样 soma 会去找相对本 manifest 目录的 `soma.yaml`，若不存在就 fail。
-# 本 deploy 显式配置 soma 块 + 提供 soma.yaml + urdf/，见下方 system.soma。
+# ⚠️ rbnx boot no longer launches the primitive / skill blocks directly.
+# If the manifest contains primitive or skill entries but no `system.soma:`
+# block, rbnx auto-injects an empty mapping (`ensure_soma_defaults`) and
+# lets soma take over the two-stage bring-up. However, soma will then look
+# for `soma.yaml` relative to this manifest directory and fail if it does
+# not exist. This deploy configures the soma block explicitly and vendors
+# both `soma.yaml` and `urdf/`; see `system.soma` below.
 # ───────────────────────────────────────────────────────────────────
 
 manifestVersion: 1
@@ -90,7 +96,8 @@ system:
     log: info
     vlm:
       upstream: https://api.ofox.ai/v1
-      api_key: sk-of-GZXXiYLTWxGtDWEyqBzyJfTEZpByJPjvbhBnzxGOnlzGZVeooWXAkNvjAjHzcoxf
+      # Fill in your own API key before running; do NOT commit real secrets.
+      api_key: <YOUR_LLM_API_KEY>
       model: gpt-5.4-mini
       api_format: openai
   liaison:
@@ -98,60 +105,72 @@ system:
     log: info
 
   # ── soma ────────────────────────────────────────────────────────────
-  # 本体描述 + primitive/skill 编排服务。v2 flat schema（2026-07
-  # PR #109 review 后落地），四个字段：
+  # Body-description + primitive/skill orchestration service.
+  # v2 flat schema (landed after PR #109 review in 2026-07), with four
+  # fields:
   #   atlas_endpoint / listen / provider_id / robot_yaml
   #
-  # 提供 atlas 上两条 gRPC cap：
-  #   robonix/system/soma/get_yaml   — 读 soma.yaml 的 body description
-  #   robonix/system/soma/get_urdf   — 读 URDF（XML）
-  # 给 pilot/scene 等消费者用。
+  # Exposes two gRPC capabilities on atlas:
+  #   robonix/system/soma/get_yaml   — reads the body description in soma.yaml
+  #   robonix/system/soma/get_urdf   — reads the URDF XML
+  # Used by pilot / scene and other consumers.
   #
-  # 设计:        docs/Robonix 开发文档.md §五
-  # 两阶段说明:  ../docs/soma_two_stage_bringup.md（§12 是 v2 变更）
-  # 部署 cheatsheet: ./SOMA_DEPLOY.md
+  # Design reference:    the Robonix developer documentation in `docs/`, §5
+  # Two-stage bring-up:  ../docs/soma_two_stage_bringup.md (§12 covers the v2 change)
+  # Deploy cheatsheet:   ./SOMA_DEPLOY.md
   #
-  # ─── soma 在 rbnx 启动链中的位置 ────────────────────────────────────
-  # soma 是 rbnx 的 SYSTEM_BUILTIN。rbnx boot 用 `spawn_soma_binary`
-  # 特化 fork：建 `pipe(2)`，pre_exec 把读端 dup2 到 fd 3，设
-  # `ROBONIX_SOMA_STAGE_FD=3`；rbnx 父进程保留写端做 stage 2 trigger。
-  # 翻译规则在 deploy.rs 的 `"soma" =>` 分支，支持的 CLI flag：
+  # ─── Where soma sits in the rbnx startup chain ─────────────────────
+  # soma is an rbnx SYSTEM_BUILTIN. rbnx boot uses the specialized
+  # `spawn_soma_binary` fork path: it creates `pipe(2)`, dup2's the read
+  # end to fd 3 in pre_exec, and sets `ROBONIX_SOMA_STAGE_FD=3`; the rbnx
+  # parent keeps the write end to trigger stage 2 later.
+  # Translation logic lives in the `"soma" =>` branch of deploy.rs.
+  # Supported CLI flags are:
   #   --listen / --atlas / --provider-id / --robot-yaml / --config / --log
   #
-  # ─── soma 启动后做的事（两阶段 bring-up，v2 模型） ─────────────────
-  # stage 1（soma 进程启动初期）：
-  #   1) 从 --robot-yaml 加载单个 robot 的 soma.yaml + URDF。
-  #   2) 从 robot_yaml 所在目录读同目录的 robonix_manifest.yaml，
-  #      对 primitive 段 spawn `rbnx start -p <pkg> --endpoint <atlas>`
-  #      → 等 atlas 注册 → CMD_INIT → CMD_ACTIVATE。
-  #   3) 向 atlas 注册自身的 get_yaml / get_urdf 两个 gRPC cap 并 ACTIVE。
-  #   4) 用 `tokio::fs::File::from_std` 把 fd 3 包成 async file，
-  #      `BufReader::read_line` 挂起等 `stage2\n`。
-  # stage 2（rbnx 起完 service: 段后往 pipe 写 `stage2\n` 触发）：
-  #   1) 对 skill 段：spawn → CMD_INIT，**不** ACTIVATE。
-  #   2) skill 留在 INACTIVE，由 executor 在 MCP 工具被首次调用时
-  #      再发 CMD_ACTIVATE。
+  # ─── What soma does after it starts (two-stage bring-up, v2 model) ──
+  # stage 1 (initial soma process startup):
+  #   1) Loads a single robot's soma.yaml + URDF from --robot-yaml.
+  #   2) Reads the sibling robonix_manifest.yaml from the robot_yaml
+  #      directory, then spawns the primitive block with
+  #      `rbnx start -p <pkg> --endpoint <atlas>`
+  #      → wait for atlas registration → CMD_INIT → CMD_ACTIVATE.
+  #   3) Registers its own get_yaml / get_urdf gRPC capabilities on atlas
+  #      and moves to ACTIVE.
+  #   4) Wraps fd 3 with `tokio::fs::File::from_std`, then waits on
+  #      `BufReader::read_line` for `stage2\n`.
+  # stage 2 (triggered after rbnx finishes the service block and writes
+  # `stage2\n` into the pipe):
+  #   1) For the skill block: spawn → CMD_INIT, but DO NOT ACTIVATE.
+  #   2) Skills stay INACTIVE; executor sends CMD_ACTIVATE only when the
+  #      corresponding MCP tool is first invoked.
   #
-  # 也就是说：**rbnx boot 已经不再起 primitive / skill 段**。本
-  # manifest 有 primitive（orbbec/piper/描述/handeye）和 skill 计划，
-  # 所以**必须**起 soma；否则机器人不会动。
+  # In other words, rbnx boot no longer launches the primitive / skill
+  # blocks directly. This manifest includes primitives
+  # (orbbec / piper / description / handeye) and a planned skill block,
+  # so soma is REQUIRED; otherwise the robot will not move.
   #
-  # 部署机上必须已 `make install` 整套源码（不能单独 cargo install
-  # robonix-soma），原因见 SOMA_DEPLOY.md。
+  # The deploy machine must have run `make install` for the full source
+  # tree (not a standalone `cargo install robonix-soma`); see
+  # SOMA_DEPLOY.md for the rationale.
   soma:
     listen: 127.0.0.1:50091
     log: info
     provider_id: soma
-    # `robot_yaml` 和 `config` 都由 rbnx 原样透传给 robonix-soma CLI，
-    # 且 rbnx 不 chdir，所以到达 soma 的必须是绝对路径。为了避免把
-    # 操作员的 HOME 写死，rbnx 在 `ensure_soma_defaults` 里对这两个
-    # 字段做了自动路径规范化（见 robonix/tools/rbnx/src/cmd/deploy.rs）：
-    #   * 绝对路径 → 原样保留（bind-mount / /opt 等 override 用）；
-    #   * 相对路径（含裸文件名） → join 到本 manifest 所在目录。
-    # 所以下面直接写相对本文件的路径即可，跨机克隆到任何目录都能跑。
+    # `robot_yaml` and `config` are passed through by rbnx directly to the
+    # robonix-soma CLI. rbnx does not chdir, so soma ultimately receives
+    # absolute paths. To avoid hardcoding an operator's HOME, rbnx
+    # auto-normalizes these two fields inside `ensure_soma_defaults`
+    # (see robonix/tools/rbnx/src/cmd/deploy.rs):
+    #   * absolute path → kept as-is (useful for bind-mount / /opt overrides);
+    #   * relative path, including bare filenames → joined against this
+    #     manifest directory.
+    # So writing paths relative to this file is enough, and the deploy can
+    # run correctly no matter where it is cloned.
     robot_yaml: soma.yaml
-    # config 里的字段和上面重复没关系（CLI > config）；保留 --config
-    # 是为了 `robonix-soma --config <abs>` 本地手工调试也能跑。
+    # Duplicated fields between CLI and config are fine (CLI > config).
+    # Keeping `--config` is useful for local manual debugging with
+    # `robonix-soma --config <abs>`.
     config: soma_config.local.yaml
 
   # Non-builtin system services. rbnx boot resolves these by name to
@@ -173,7 +192,9 @@ primitive:
   # waits for first RGB frame, then atlas-declares rgb / depth /
   # camera_info on /camera/{color,depth}/*. Must stay FIRST among the
   # primitives that consume `primitive/camera/*` indirectly (none here
-  # yet — yolo_world / yolo_grasp consume it from the service: block).
+  # yet — llm_detect / yolo_grasp consume it from the service: block;
+  # depth is actually unused in vertical-grasp mode, but publishing it
+  # anyway does not affect the sentinel behavior).
   #
   - name: orbbec_camera
     url: https://github.com/lhw2002426/OrbbecSDK_rbnx
@@ -230,7 +251,7 @@ primitive:
   # Owns no atlas-routed contracts (capabilities: []). Publishes the
   # joint-driven TF subtree:
   #   base_link → link1 → ... → link6
-  # by running robot_state_publisher with the vendored Piper URDF
+  # by running robot_state_publisher with the vendored Piper URDF,
   # remapping `joint_states` to `/arm/joint_states_single`.
   #
   # MUST come AFTER piper_ctl in this list — piper_ctl is what
@@ -242,9 +263,9 @@ primitive:
   - name: piper_description
     url: https://github.com/lhw2002426/piper_description_rbnx
     branch: main
-    config: {} 
-  # — package has no Driver(CMD_INIT) handler, 
-  # so theconfig block is ineffective. URDF variant is selected via the
+    config: {}
+  # — package has no Driver(CMD_INIT) handler,
+  # so the config block is ineffective. URDF variant is selected via the
   # top-level env: PIPER_URDF_PATH (default: with-gripper variant).
 
   # ── Stage 3B: hand-eye calibration TF ─────────────────────────────
@@ -280,83 +301,108 @@ primitive:
 
 # service:
 service:
-  # ── Stage 4A: open-vocab object detection (YOLOE / YOLO-World) ────
-  # The ONLY GPU/ML package in the pipeline. Owns
-  # service/perception/object_detect/*.
+  # ── Stage 4A: LLM-VLM object detection (perception entrypoint for the
+  # vertical-grasp pipeline) ───────────────────────────────────────────
+  # Uses llm_detect_rbnx on the feature/vertical-grasp branch.
+  # Compared with the old yolo_world path:
+  #   * no longer depends on GPU / ultralytics weights;
+  #   * RGB → OpenAI-compatible VLM → 2D bbox;
+  #   * in vertical-grasp mode, the depth stream is completely unused
+  #     (`skip_depth=true`), and the grasp point is recovered from a
+  #     fixed tabletop z plus camera-ray back-projection.
+  # The old yolo_world service has been replaced and is no longer enabled.
   #
-  # Surfaces both atlas-routed MCP (Pilot's path) and the legacy ROS
-  # service /yolo/detect_object (pick.py + yolo_grasp_rbnx still call
-  # it). Both share one detection function.
+  # Atlas upstream: primitive/camera/rgb + primitive/camera/camera_info.
+  # Depth is skipped directly when `skip_depth` is true.
   #
-  # Atlas-resolved upstream: primitive/camera/{rgb, depth, camera_info}.
-  # Defaults match OrbbecSDK_rbnx topic names — no override needed for
-  # the standard piper_grasp_deploy.
+  # Order: MUST come AFTER orbbec_camera (it consumes the camera stream).
   #
-  # Order: MUST come AFTER orbbec_camera (consumes the camera streams).
-  # Order vs piper_ctl / piper_description / easy_handeye2 doesn't
-  # matter — those are TF / arm primitives, disjoint from yolo_world's
-  # camera-only deps.
-  #
-  # - name: yolo_world
-  #   url: https://github.com/lhw2002426/yolo_world_rbnx
-  #   branch: main
-  #   config:
-  #     # YOLOE weights — leave empty to let ultralytics auto-download
-  #     # to ~/.cache on first inference, or set absolute path to a
-  #     # pre-downloaded checkpoint:
-  #     # model_path: /opt/yolo_weights/yoloe-11l-seg-pf.pt
-  #     model_path: ""
+  - name: llm_detect
+    url: https://github.com/lhw2002426/llm_detect_rbnx
+    branch: feature/vertical-grasp
+    config:
+      # LLM API endpoint (OpenAI-compatible)
+      llm_base_url: "https://api.ofox.ai/v1"
+      # Fill in your own API key before running; do NOT commit real secrets.
+      llm_api_key: "<YOUR_LLM_API_KEY>"
+      llm_model: "google/gemini-3.1-flash-lite"
+      temperature: 0.7
 
-  #     # Topic overrides — empty means "atlas-resolve, fall back to
-  #     # default if no provider". The defaults already match
-  #     # OrbbecSDK_rbnx so the empties Just Work for this deploy.
-  #     rgb_topic: ""
-  #     depth_topic: ""
-  #     camera_info_topic: ""
+      # Set to true if camera is mounted opposite to arm (image needs
+      # 180° rotation before sending to LLM)
+      rotation_cam2arm: true
 
-  # - name: llm_detect
-  #   url: https://github.com/lhw2002426/llm_detect_rbnx
-  #   branch: main
-  #   config:
-  #     # LLM API endpoint (OpenAI-compatible)
-  #     llm_base_url: "https://api.ofox.ai/v1"
-  #     llm_api_key: "sk-of-WmCvqhOuLuBxAExANMYGsYKajzuhTYyxAMuofRRdDbQnlKNUsYdPHAmizheeamZb"
-  #     llm_model: "google/gemini-3.1-flash-lite"
-  #     temperature: 0.7
+      # Vertical-grasp mode: skip depth subscription and depth-based
+      # back-projection. The final grasp point is computed by yolo_grasp
+      # from a fixed tabletop z plus the camera ray. Config wins;
+      # env `LLM_DETECT_SKIP_DEPTH=1` is the fallback.
+      skip_depth: true
 
-  #     # Set to true if camera is mounted opposite to arm (image needs
-  #     # 180° rotation before sending to LLM)
-  #     rotation_cam2arm: true
+      # Topic overrides — empty means atlas-resolved; the default values
+      # already match OrbbecSDK_rbnx, so leaving them empty is enough for
+      # piper_grasp_deploy.
+      rgb_topic: ""
+      camera_info_topic: ""
+      # depth_topic is irrelevant when skip_depth=true, so it is omitted.
 
-  #     # Topic overrides — empty means "atlas-resolve, fall back to
-  #     # default if no provider". The defaults already match
-  #     # OrbbecSDK_rbnx so the empties Just Work for this deploy.
-  #     rgb_topic: ""
-  #     depth_topic: ""
-  #     camera_info_topic: ""
-
-  # ── Stage 4B: geometric grasp-pose estimator ──────────────────────
-  # Pure CPU. Owns service/perception/grasp_pose/*. Calls yolo_world
-  # as a CLIENT (currently via legacy ROS service /yolo/detect_object;
-  # Stage 6 will switch to atlas MCP).
+  # ── Stage 4B: vertical-grasp grasp-pose calculator ─────────────────
+  # Pure CPU. Owns service/perception/grasp_pose/*. The algorithm has
+  # already been replaced from the old PLACEHOLDER with the fixed
+  # top-down strategy on the feature/vertical-grasp branch:
+  #   * xy: bbox center pixel from llm_detect → back-project a ray using
+  #     camera intrinsics → intersect with the tabletop plane z=z_table
+  #     to get (x, y) in base_link frame;
+  #   * z: fixed constant z_table + z_offset;
+  #   * orientation: fixed roll=π / pitch=0 / yaw=default_yaw_rad;
+  #   * gripper opening: default_gripper_width;
+  #   * the three-stage motion sequence (pre-grasp / grasp / post-grasp)
+  #     is orchestrated by pick_skill, where approach_dist becomes the
+  #     z lift used for pre/post motion.
+  # Upstream: llm_detect bbox + the TF tree produced by
+  # easy_handeye2/piper_description (base_frame ← camera_frame).
   #
-  # ⚠️ Currently in PLACEHOLDER mode — every grasp_request returns
-  # success=false until the real upstream code is dropped into
-  # `yolo_grasp/_upstream/yolo_grasp.py` and IS_PLACEHOLDER flipped to
-  # False. See package README "Placeholder mode".
+  # Order: MUST come AFTER llm_detect (consumes its detection result).
   #
-  # Order: MUST come AFTER yolo_world (atlas dep + ROS service
-  # client). Order vs primitives doesn't matter (no direct primitive
-  # subscriptions).
-  #
-  # - name: yolo_grasp
-  #   url: https://github.com/lhw2002426/yolo_grasp_rbnx
-  #   branch: main
-  #   # config: {} — no tunables until the real estimator lands.
-  #   # When wired, expect knobs like:
-  #   #   approach_distance_m: 0.10
-  #   #   gripper_max_width_m: 0.08
-  #   #   score_threshold:     0.3
+  - name: yolo_grasp
+    url: https://github.com/lhw2002426/yolo_grasp_rbnx
+    branch: feature/vertical-grasp
+    config:
+      # ── Vertical-grasp parameters (added on the feature/vertical-grasp branch) ──
+      # Tabletop z in the base_link frame, in meters. This MUST be
+      # measured on-site with tf2_echo:
+      #   ros2 run tf2_ros tf2_echo arm/base_link <table_marker_link>
+      # or by direct physical measurement. If z is wrong the arm either
+      # grabs air or crashes into the table; this is the most critical
+      # physical constant in the whole pipeline.
+      # On-site measurement (2026-07-05): when the gripper fingertips
+      # touch the table, tf2_echo for arm/base_link → arm/link6 gives
+      # z = -0.186. MoveIt plans against the arm/link6 origin, so we use
+      # the link6 touch-down height directly here with no TCP-length
+      # compensation.
+      z_table: -0.186
+      z_offset: 0.0                       # compensation above z_table, usually 0
+      # Global XY translation applied to the mapped grasp point before
+      # any yaw-dependent local offset. Use this for whole-field left/right
+      # or front/back correction after hand-eye calibration.
+      bias_x: 0.0
+      bias_y: 0.025
+      approach_dist: 0.10                 # pre/post lift, meters
+      default_yaw_rad: 0.0                # end-effector yaw during grasp; 0 = along base_x
+      # Strategy A (avoid wrist flips by constraining the j6 branch):
+      # when enabled, ignore default_yaw_rad and use atan2(y_base, x_base)
+      # as yaw so the gripper opening aligns radially from base to target.
+      # This narrows the feasible j6 region significantly and makes MoveIt
+      # much less likely to choose a wrist-flipped IK solution at j6 ± π.
+      # If you want the opening direction rotated by π/2 instead
+      # (sideways pinch), set radial_yaw_offset_rad to 1.5708; use
+      # -1.5708 for the opposite direction.
+      radial_yaw: true
+      radial_yaw_offset_rad: 0.0
+      default_gripper_width: 0.04         # target opening width, meters
+      base_frame: "arm/base_link"
+      camera_frame: "camera_color_optical_frame"
+      camera_info_topic: "/camera/color/camera_info"
+      output_frame: "arm/base_link"
 
   # ── Stage 5: MoveIt + grasp executor ──────────────────────────────
   # Owns service/manipulation/*. Wraps the upstream MoveIt config
@@ -374,48 +420,51 @@ service:
   # AFTER easy_handeye2 (its static link6 → camera_color_optical_frame
   # TF is needed for the cpp's tf2 transform inside execute_grasp).
   # piper_description is also a dep (provides the unprefixed TF
-  # subtree). Order vs yolo_world / yolo_grasp doesn't matter
+  # subtree). Order vs llm_detect / yolo_grasp doesn't matter
   # (manipulation has no perception dep at boot time).
   #
-  # - name: piper_moveit
-  #   url: https://github.com/lhw2002426/piper_moveit_rbnx
-  #   branch: main
-  #   config:
-  #     arm_group_name:       arm
-  #     end_effector_link:    link6      # in prefixed TF subtree
-  #     gripper_action_name:  /gripper_controller/follow_joint_trajectory
-  #     sentinel_timeout_s:   60.0           # launch + first arm_status
-
-  - name: openvla_client
-    url: https://github.com/lhw2002426/vla_client_rbnx
+  - name: piper_moveit
+    url: https://github.com/lhw2002426/piper_moveit_rbnx
     branch: main
     config:
-      vla_server_url: "http://162.105.88.184:8777"
-      full_image_topic: /exterior_camera/color/image_raw
-      wrist_image_topic: /camera/color/image_raw
-      joint_states_topic: /arm/joint_states_single
-      pos_cmd_topic: /arm/pos_cmd
-      action_hz: 2
+      arm_group_name:       arm
+      end_effector_link:    link6      # in prefixed TF subtree
+      gripper_action_name:  /gripper_controller/follow_joint_trajectory
+      sentinel_timeout_s:   60.0           # launch + first arm_status
 
-      # 归一化常量（必须与训练数据集一致）
-      action_min: [-28042, 80978, -98976, -772.51, 49456.09, -29964, -400]
-      action_max: [4566, 122947, -63015, 3498, 68869.87, 14980, 84500]
-
-      # 硬件安全限位（SDK raw 单位，超出范围的指令会被裁剪）
-      hw_action_min: [-31400, 0, -150000, -90000, 0, -90000, -500]
-      hw_action_max: [31400, 180000, 0, 90000, 72000, 90000, 90000]
-
-      # 每步最大变化量（SDK raw 单位，防止关节突跳）
-      max_delta_per_step_sdk: [5000, 5000, 5000, 5000, 5000, 5000, 15000]
-
-      action_steps_to_execute: 5   # 每次调用执行的动作步数
+  # ── openvla_client: disabled in this manifest because it conflicts
+  # with the vertical-grasp pipeline ──────────────────────────────────
+  # openvla_client monopolizes /arm/pos_cmd for 2 Hz closed-loop
+  # inference, which collides with piper_moveit's execute_grasp.
+  # When the vertical-grasp pipeline is enabled, it must stay off; for a
+  # VLA demo, do the opposite and comment out llm_detect / yolo_grasp /
+  # piper_moveit / pick.
+  # In the future this may be split into robonix_manifest.grasp.yaml /
+  # robonix_manifest.vla.yaml and switched via symlink.
+  #
+  # - name: openvla_client
+  #   url: https://github.com/lhw2002426/vla_client_rbnx
+  #   branch: main
+  #   config:
+  #     vla_server_url: "http://162.105.88.184:8777"
+  #     full_image_topic: /exterior_camera/color/image_raw
+  #     wrist_image_topic: /camera/color/image_raw
+  #     joint_states_topic: /arm/joint_states_single
+  #     pos_cmd_topic: /arm/pos_cmd
+  #     action_hz: 2
+  #     action_min: [-28042, 80978, -98976, -772.51, 49456.09, -29964, -400]
+  #     action_max: [4566, 122947, -63015, 3498, 68869.87, 14980, 84500]
+  #     hw_action_min: [-31400, 0, -150000, -90000, 0, -90000, -500]
+  #     hw_action_max: [31400, 180000, 0, 90000, 72000, 90000, 90000]
+  #     max_delta_per_step_sdk: [5000, 5000, 5000, 5000, 5000, 5000, 15000]
+  #     action_steps_to_execute: 5
 
 
 # skill:
 skill:
   # ── Stage 6: pick-up-named-object skill ───────────────────────────
   # The LLM-facing entry point of the whole pipeline. Owns
-  # robonix/skill/pick/*. Orchestrates yolo_world + yolo_grasp +
+  # robonix/skill/pick/*. Orchestrates llm_detect + yolo_grasp +
   # piper_moveit into a single user-invocable `pick(object_name)`
   # MCP tool. All upstream calls go over MCP HTTP (atlas-resolved
   # at on_activate time) — no fallback to the legacy ROS service
@@ -424,7 +473,7 @@ skill:
   # Lazy activate: rbnx boot leaves the skill in INITIALIZED state.
   # The executor sends Driver(CMD_ACTIVATE) on the first MCP call,
   # at which point the skill blocks up to 60s waiting for atlas to
-  # resolve all three upstream services. So all of yolo_world,
+  # resolve all three upstream services. So all of llm_detect,
   # yolo_grasp, and piper_moveit MUST be ACTIVE before the user
   # hits this skill — but we don't enforce it at boot order; if
   # they're not ready, the first pick() call fails fast with a clear
@@ -436,14 +485,14 @@ skill:
   # the order requirement is "after everything else", which is
   # naturally satisfied by being in the skill: block.
   #
-  # ⚠️ yolo_grasp_rbnx is currently in PLACEHOLDER mode — first
-  # pick() call will return failure until the real estimator is
-  # wired in yolo_grasp/main.py. See yolo_grasp_rbnx README.
+  # In the vertical-grasp pipeline, pick's three-stage motion sequence
+  # (pre-grasp → grasp → post-grasp) is implemented on the
+  # feature/vertical-grasp branch and works together with
+  # yolo_grasp's approach_dist parameter.
   #
-  # - name: pick
-  #   url: https://github.com/lhw2002426/pick_skill_rbnx
-  #   branch: main
-  #   config:
-  #     default_timeout_s:    60.0     # used when caller passes 0
-  #     default_max_retries:  5        # used when caller passes 0
-
+  - name: pick
+    url: https://github.com/lhw2002426/pick_skill_rbnx
+    branch: feature/vertical-grasp
+    config:
+      default_timeout_s:    60.0     # used when caller passes 0
+      default_max_retries:  5        # used when caller passes 0

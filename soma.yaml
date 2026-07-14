@@ -120,21 +120,29 @@ description:
     Table-top manipulation cell. A 6-DoF AgileX Piper arm with a
     factory two-finger parallel gripper, plus an eye-in-hand Orbbec
     Dabai DCW RGBD camera (static TF via easy_handeye2 calibration).
-    Currently paired with an OpenVLA client skill that consumes wrist
-    RGB + joint proprioception and emits joint-space actions directly
-    to the arm (MoveIt bypassed). No mobile base.
+    Currently configured for the vertical-grasp pipeline: llm_detect
+    (VLM-based 2D detection on wrist RGB) → yolo_grasp (fixed top-down
+    pose from bbox center + configured table z) → piper_moveit
+    (MoveIt-planned execute_grasp) → pick skill. Depth stream is
+    unused. No mobile base.
   can_do:
     - "Command joint positions on the Piper via primitive/arm/pos_cmd."
     - "Read arm proprioception (joint_states, end_pose, arm_status)."
-    - "Capture eye-in-hand RGB + registered depth from the Orbbec Dabai DCW."
-    - "Run VLA closed-loop inference at ~2 Hz through the openvla_client service."
+    - "Capture eye-in-hand RGB from the Orbbec Dabai DCW."
+    - "Detect table-top objects by name via llm_detect (LLM VLM on RGB; depth stream is unused in this manifest)."
+    - "Grasp table-top objects with a fixed vertical top-down approach — xy from LLM bbox + camera ray-plane intersection at z=z_table, orientation locked to roll=π/pitch=0."
+    - "Plan collision-aware arm motions to the computed grasp pose via piper_moveit / execute_grasp."
   cannot_do:
     - "Drive around — this deploy has no mobile base."
-    - "Grasp arbitrary novel objects — yolo_world / yolo_grasp / pick services are commented out in this manifest."
-    - "Plan around obstacles — MoveIt is bypassed; the safety net is per-step SDK-unit clipping in openvla_client."
+    - "Grasp objects with arbitrary 6-DoF poses — this deploy only does vertical top-down grasps."
+    - "Grasp objects standing/lying above or below the reachable table plane — z is clamped to a single configured constant (z_table)."
+    - "Grasp transparent/reflective objects reliably — LLM detection may still fail, but at least depth artifacts are no longer a failure mode (depth is not used)."
     - "See any scene outside the wrist camera's FOV."
+    - "Run closed-loop VLA policies — openvla_client is disabled in this manifest to keep /arm/pos_cmd owned by piper_moveit."
   notes:
     - "The vendored URDF is the WITH-GRIPPER variant (joint1..joint8; joint7/joint8 are the gripper fingers). Override to no-gripper via env PIPER_URDF_PATH in robonix_manifest.yaml if a naked arm is needed."
-    - "Hand-eye calibration (link6 → camera_color_optical_frame) is a PLACEHOLDER — see easy_handeye2_rbnx README before relying on grasps."
-    - "openvla_client runs against a remote VLA server (http://162.105.88.184:8777); the arm won't move unless that endpoint is reachable."
+    - "Hand-eye calibration (link6 → camera_color_optical_frame) is a PLACEHOLDER — see easy_handeye2_rbnx README. Vertical grasp relies on this TF as the ONLY spatial link between camera pixels and base_link, so it MUST be replaced with a real calibration before running on hardware."
+    - "z_table (yolo_grasp config, default 0.02 m) is the physical table height in base_link frame. Measure it on-site with `ros2 run tf2_ros tf2_echo arm/base_link <table_marker>` or a tape and update the manifest — a wrong z_table causes empty grasps or table collisions."
+    - "llm_detect uses skip_depth=true: depth topic is not subscribed and depth-based fallback is disabled. Grasp geometry comes entirely from RGB bbox + camera ray → z_table plane intersection."
+    - "openvla_client is commented out in this manifest (was the previous demo path). Do NOT re-enable it while llm_detect / yolo_grasp / piper_moveit are active — both would write to /arm/pos_cmd concurrently."
     - "Soma v2 flat schema: this file is served verbatim; only urdf.path and robot.id are parsed. The tree / description sections are for LLM context via the future soma_bridge MCP adapter."
