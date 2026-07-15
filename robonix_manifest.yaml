@@ -1,5 +1,13 @@
-# Robonix deploy manifest for the Piper arm, Orbbec camera, and
-# vertical-grasp pipeline.
+# Robonix deploy manifest for AgileX Piper + Orbbec vertical-grasp workspace.
+#
+# Current package profile on this branch:
+#   primitive: orbbec_camera -> piper_ctl -> piper_description
+#   service:   llm_detect -> grasp_pose -> roboarm_ik
+#   skill:     pick
+#
+# Compared with the older deploy shape on `main`, this branch keeps the
+# `pick ok` pipeline (grasp_pose + roboarm_ik) but now fetches every remote
+# package from the `syswonder` GitHub organization.
 #
 # Boot order is declaration order:
 #   1. rbnx starts system services.
@@ -11,6 +19,13 @@
 
 manifestVersion: 1
 name: robonix-piper-grasp-deploy
+catalog:
+  name: robonix.robot.agilex.piper_grasp
+  version: 0.2.0
+  description: Robonix deploy manifest for AgileX Piper with Orbbec Dabai DCW and llm_detect + grasp_pose + roboarm_ik vertical grasp pipeline.
+  tags: [robot, deploy, agilex, piper_grasp, camera, manipulation, perception, grasp]
+  maintainers:
+    - lhw2002426 <lhw2002426@users.noreply.github.com>
 
 env: {}
 
@@ -42,7 +57,7 @@ system:
 primitive:
   # Orbbec Dabai DCW RGB camera. Depth is disabled for vertical grasp.
   - name: orbbec_camera
-    url: https://github.com/lhw2002426/OrbbecSDK_rbnx
+    url: https://github.com/syswonder/primitive-orbbec-dabai_dcw-camera-rbnx
     branch: main
     config:
       camera_name: camera
@@ -60,7 +75,7 @@ primitive:
 
   # Piper control must start before piper_description and roboarm_ik.
   - name: piper_ctl
-    url: https://github.com/lhw2002426/piper_ctl_rbnx
+    url: https://github.com/syswonder/primitive-agilex-piper-arm-rbnx
     branch: main
     config:
       can_port: can_piper
@@ -74,15 +89,15 @@ primitive:
 
   # Publishes the Piper TF tree from /arm/joint_states_single.
   - name: piper_description
-    url: https://github.com/lhw2002426/piper_description_rbnx
+    url: https://github.com/syswonder/primitive-agilex-piper-description-rbnx
     branch: main
     config: {}
 
 service:
   # RGB image -> VLM bbox. Depth is intentionally skipped.
   - name: llm_detect
-    url: https://github.com/lhw2002426/llm_detect_rbnx
-    branch: feature/vertical-grasp
+    url: https://github.com/syswonder/service-object-detect-rbnx
+    branch: main
     config:
       llm_base_url: ${VLM_BASE_URL}
       llm_api_key: ${VLM_API_KEY}
@@ -96,7 +111,8 @@ service:
 
   # Bbox center -> arm/base_link top-down grasp pose.
   - name: grasp_pose
-    path: ./rbnx-boot/cache/grasp_pose_rbnx
+    url: https://github.com/syswonder/service-grasp-pose-rbnx
+    branch: main
     config:
       hand_eye_calibration_file: ../../hand-eye-data/2d_homography.npy
       default_desktop_height: -0.21
@@ -105,9 +121,10 @@ service:
       output_frame: "arm/base_link"
       approach_dist: 0.30
 
-  # Executes explicit gRPC execute_grasp/reset/teach_safe/put_down calls from pick_skill.
+  # Executes explicit gRPC execute_grasp/reset/teach_safe/put_down calls from pick skill.
   - name: roboarm_ik
-    path: ./rbnx-boot/cache/roboarm_ik_rbnx
+    url: https://github.com/syswonder/service-roboarm-ik-rbnx
+    branch: main
     config:
       # Fixed observation pose used by manipulation/reset before detection.
       # Units are degrees for joint1..joint6.
@@ -126,7 +143,7 @@ service:
 skill:
   # User-facing pick(object_name) skill.
   - name: pick
-    url: https://github.com/lhw2002426/pick_skill_rbnx
-    branch: feature/vertical-grasp
+    url: https://github.com/syswonder/skill-pick-vertical-grasp-rbnx
+    branch: main
     config:
       park_at_teach_safe_after_pick: true
