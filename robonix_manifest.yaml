@@ -23,6 +23,7 @@ catalog:
   name: robonix.robot.agilex.piper_grasp
   version: 0.2.0
   description: Robonix deploy manifest for AgileX Piper with Orbbec Dabai DCW and llm_detect + grasp_pose + roboarm_ik vertical grasp pipeline.
+  license: MulanPSL-2.0
   tags: [robot, deploy, agilex, piper_grasp, camera, manipulation, perception, grasp]
   maintainers:
     - lhw2002426 <lhw2002426@users.noreply.github.com>
