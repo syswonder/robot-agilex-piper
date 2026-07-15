@@ -49,8 +49,11 @@ pilot/executor
   -> llm_detect.detect_object       # RGB image -> LLM/VLM bbox
   -> grasp_pose.grasp_request       # bbox -> base_link grasp pose
   -> roboarm_ik.execute_grasp       # IK + joint/gripper command sequence
-  -> piper_ctl                      # publishes to the real Piper arm
-  -> roboarm_ik.reset               # park arm / clear sticky state
+  -> piper_ctl                      # publishes to the real Piper arm; object stays held
+
+pilot/executor
+  -> pick_skill.put_down()
+  -> roboarm_ik.teach_safe          # open gripper and move to teach-safe pose
 ```
 
 In this deploy, depth is skipped for detection. `grasp_pose` computes xy by

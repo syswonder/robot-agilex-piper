@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--enable-topic", default="/arm/enable_flag")
     parser.add_argument("--image-timeout", type=float, default=10.0)
     parser.add_argument("--service-timeout", type=float, default=90.0)
+    parser.add_argument("--post-enable-wait", type=float, default=2.0)
     return parser.parse_args()
 
 
@@ -108,7 +109,14 @@ def compute_homography() -> np.ndarray:
     if len(image_points) < 4 or len(end_poses) < 4:
         raise RuntimeError("至少需要4组点才能计算2D homography")
     robot_points = np.array([[pose[0], pose[1]] for pose in end_poses], dtype=np.float32)
-    homography, inlier_mask = cv2.findHomography(image_points, robot_points, method=cv2.RANSAC)
+    homography, inlier_mask = cv2.findHomography(
+        image_points,
+        robot_points,
+        method=cv2.RANSAC,
+        ransacReprojThreshold=0.005,
+        maxIters=10000,
+        confidence=0.999,
+    )
     if homography is None:
         raise RuntimeError("cv2.findHomography failed")
     projected = np.array([image_to_robot_xy(homography, point) for point in image_points], dtype=np.float32)
@@ -269,6 +277,7 @@ def run_calibrate(args: argparse.Namespace) -> None:
     try:
         print("正在使能机械臂并回到固定观察位姿...")
         node.set_enabled(True)
+        time.sleep(max(0.0, args.post_enable_wait))
         node.call_trigger(node.reset_client, args.reset_service)
         image_msg = node.wait_for_image()
         frozen_image = ros_image_to_bgr(image_msg)
@@ -319,6 +328,7 @@ def run_calibrate(args: argparse.Namespace) -> None:
                     print(f"已保存 {len(image_points)} 组。正在重新使能并回观察位姿...")
                     selected_point = None
                     node.set_enabled(True)
+                    time.sleep(max(0.0, args.post_enable_wait))
                     node.call_trigger(node.reset_client, args.reset_service)
                     image_msg = node.wait_for_image()
                     frozen_image = ros_image_to_bgr(image_msg)

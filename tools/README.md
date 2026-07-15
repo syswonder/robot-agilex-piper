@@ -6,7 +6,7 @@ workflow:
 - `calibrate_handeye_2d.py`: collect pixel-to-arm samples and compute the 2D
   homography.
 - `test_handeye_2d.py`: click an image point, project it through the saved
-  homography, and command the active manipulation backend to move there.
+  homography, and command the active manipulation backend over Atlas/gRPC.
 
 The homography maps image pixels `[u, v, 1]` from `/camera/color/image_raw` to
 XY coordinates in `arm/base_link`. It is saved under:
@@ -106,7 +106,7 @@ Workflow:
 2. Click a point in the RGB image.
 3. Press `Enter` or `Space`.
 4. The script projects the clicked pixel through the homography.
-5. It calls `robonix/service/manipulation/execute_grasp` through Atlas.
+5. It calls `robonix/service/manipulation/execute_grasp` through Atlas/gRPC.
 
 Useful options:
 

@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
-import json
 import math
 import os
 import sys
@@ -294,8 +292,10 @@ def _load_atlas_modules(codegen_dir: str):
     import atlas_pb2  # type: ignore
     import atlas_pb2_grpc  # type: ignore
     import grpc  # type: ignore
+    import manipulation_pb2  # type: ignore
+    import robonix_contracts_pb2_grpc  # type: ignore
 
-    return grpc, atlas_pb2, atlas_pb2_grpc
+    return grpc, atlas_pb2, atlas_pb2_grpc, manipulation_pb2, robonix_contracts_pb2_grpc
 
 
 def _provider_has_contract(provider, contract_id: str, transport: int) -> bool:
@@ -306,10 +306,11 @@ def _provider_has_contract(provider, contract_id: str, transport: int) -> bool:
 
 
 def resolve_execute_grasp(args: argparse.Namespace):
-    grpc, atlas_pb2, atlas_pb2_grpc = _load_atlas_modules(args.codegen_dir)
+    grpc, atlas_pb2, atlas_pb2_grpc, manipulation_pb2, contracts_grpc = (
+        _load_atlas_modules(args.codegen_dir))
     channel = grpc.insecure_channel(args.atlas)
     stub = atlas_pb2_grpc.AtlasStub(channel)
-    transport = atlas_pb2.TRANSPORT_MCP
+    transport = atlas_pb2.TRANSPORT_GRPC
     deadline = time.monotonic() + float(args.resolve_timeout)
     last_seen: list[str] = []
 
@@ -341,7 +342,16 @@ def resolve_execute_grasp(args: argparse.Namespace):
             )
             if not connected.endpoint:
                 raise RuntimeError(f"atlas returned empty endpoint for {provider.id}")
-            return grpc, channel, stub, atlas_pb2, connected.channel_id, connected.endpoint
+            return (
+                grpc,
+                channel,
+                stub,
+                atlas_pb2,
+                manipulation_pb2,
+                contracts_grpc,
+                connected.channel_id,
+                connected.endpoint,
+            )
         if len(providers) > 1:
             names = [provider.id for provider in providers]
             raise RuntimeError(f"multiple active execute_grasp providers: {names}")
@@ -353,22 +363,9 @@ def resolve_execute_grasp(args: argparse.Namespace):
     )
 
 
-async def call_execute_grasp(endpoint: str, tool_args: dict) -> dict:
-    from fastmcp import Client
-
-    async with Client(endpoint) as client:
-        result = await client.call_tool("execute_grasp", tool_args)
-    if not result.content:
-        return {}
-    text = result.content[0].text
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return {"raw": text}
-
-
-def build_execute_args(
+def build_execute_request(
     *,
+    manipulation_pb2,
     frame_id: str,
     x: float,
     y: float,
@@ -376,26 +373,22 @@ def build_execute_args(
     orientation: Quaternion,
     gripper_width: float,
     timeout_s: float,
-) -> dict:
-    return {
-        "target_pose": {
-            "header": {
-                "stamp": {"sec": 0, "nanosec": 0},
-                "frame_id": frame_id,
-            },
-            "pose": {
-                "position": {"x": float(x), "y": float(y), "z": float(z)},
-                "orientation": {
-                    "x": float(orientation.x),
-                    "y": float(orientation.y),
-                    "z": float(orientation.z),
-                    "w": float(orientation.w),
-                },
-            },
-        },
-        "gripper_width": float(gripper_width),
-        "timeout_s": float(timeout_s),
-    }
+) -> object:
+    req = manipulation_pb2.ExecuteGrasp_Request(
+        gripper_width=float(gripper_width),
+        timeout_s=float(timeout_s),
+    )
+    req.target_pose.header.stamp.sec = 0
+    req.target_pose.header.stamp.nanosec = 0
+    req.target_pose.header.frame_id = frame_id
+    req.target_pose.pose.position.x = float(x)
+    req.target_pose.pose.position.y = float(y)
+    req.target_pose.pose.position.z = float(z)
+    req.target_pose.pose.orientation.x = float(orientation.x)
+    req.target_pose.pose.orientation.y = float(orientation.y)
+    req.target_pose.pose.orientation.z = float(orientation.z)
+    req.target_pose.pose.orientation.w = float(orientation.w)
+    return req
 
 
 def main() -> int:
@@ -438,9 +431,19 @@ def main() -> int:
             f"orientation_mode={args.orientation_mode}, yaw={effective_yaw:.4f}"
         )
 
-        grpc, channel, stub, atlas_pb2, channel_id, endpoint = resolve_execute_grasp(args)
+        (
+            grpc,
+            channel,
+            stub,
+            atlas_pb2,
+            manipulation_pb2,
+            contracts_grpc,
+            channel_id,
+            endpoint,
+        ) = resolve_execute_grasp(args)
         try:
-            tool_args = build_execute_args(
+            req = build_execute_request(
+                manipulation_pb2=manipulation_pb2,
                 frame_id=args.frame_id,
                 x=x,
                 y=y,
@@ -450,9 +453,24 @@ def main() -> int:
                 timeout_s=args.execute_timeout,
             )
             print(f"calling execute_grasp via {endpoint}")
-            resp = asyncio.run(call_execute_grasp(endpoint, tool_args))
-            print(f"execute_grasp response: {resp}")
-            return 0 if bool(resp.get("success", False)) else 3
+            exec_channel = grpc.insecure_channel(
+                endpoint, options=[("grpc.enable_http_proxy", 0)])
+            try:
+                exec_stub = contracts_grpc.RobonixServiceManipulationExecuteGraspStub(
+                    exec_channel)
+                resp = exec_stub.ExecuteGrasp(
+                    req, timeout=max(args.execute_timeout + 5.0, 10.0))
+                print(
+                    "execute_grasp response: "
+                    f"success={resp.success} message={resp.message!r} "
+                    f"elapsed_s={resp.elapsed_s:.2f}"
+                )
+                return 0 if bool(resp.success) else 3
+            finally:
+                try:
+                    exec_channel.close()
+                except Exception:
+                    pass
         finally:
             try:
                 stub.DisconnectCapability(

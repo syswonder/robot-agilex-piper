@@ -34,3 +34,4 @@ venv/
 # Temp
 tmp/
 *.tmp
+env.sh
