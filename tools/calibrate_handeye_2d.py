@@ -107,7 +107,7 @@ def compute_homography() -> np.ndarray:
             f"image/end pose count mismatch: {len(image_points)} vs {len(end_poses)}"
         )
     if len(image_points) < 4 or len(end_poses) < 4:
-        raise RuntimeError("至少需要4组点才能计算2D homography")
+        raise RuntimeError("at least 4 point pairs are required to compute a 2D homography")
     robot_points = np.array([[pose[0], pose[1]] for pose in end_poses], dtype=np.float32)
     homography, inlier_mask = cv2.findHomography(
         image_points,
@@ -148,12 +148,12 @@ def image_to_robot_xy(homography: np.ndarray, point: np.ndarray) -> tuple[float,
 
 
 def wait_for_disable_confirmation(node: "CalibrateNode") -> bool:
-    print("请确认机械臂已经停在安全失能姿态。确认后按 d 失能；按 Esc 取消本点。")
+    print("Confirm the arm is already at a safe disable pose. Press d to disable; press Esc to cancel this sample.")
     while rclpy.ok():
         rclpy.spin_once(node, timeout_sec=0.05)
         key = cv2.waitKey(50) & 0xFF
         if key in (27, ord("q")):
-            print("已取消失能，仍保持使能状态。")
+            print("Disable cancelled. The arm remains enabled.")
             return False
         if key == ord("d"):
             return True
@@ -268,21 +268,21 @@ def run_calibrate(args: argparse.Namespace) -> None:
         nonlocal selected_point
         if event == cv2.EVENT_LBUTTONDOWN:
             selected_point = (int(x), int(y))
-            print(f"选择图片点: {selected_point}")
+            print(f"Selected image point: {selected_point}")
 
     rclpy.init()
     node = CalibrateNode(args)
     cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
     cv2.setMouseCallback(window_name, on_mouse)
     try:
-        print("正在使能机械臂并回到固定观察位姿...")
+        print("Enabling the arm and returning to the fixed observation pose...")
         node.set_enabled(True)
         time.sleep(max(0.0, args.post_enable_wait))
         node.call_trigger(node.reset_client, args.reset_service)
         image_msg = node.wait_for_image()
         frozen_image = ros_image_to_bgr(image_msg)
-        print(f"图像分辨率: {frozen_image.shape[1]}x{frozen_image.shape[0]}")
-        print("点击图像点后按 Enter/空格确认；Esc 退出。")
+        print(f"Image resolution: {frozen_image.shape[1]}x{frozen_image.shape[0]}")
+        print("Click an image point, then press Enter/Space to confirm; Esc exits.")
         try:
             while rclpy.ok():
                 rclpy.spin_once(node, timeout_sec=0.0)
@@ -306,14 +306,14 @@ def run_calibrate(args: argparse.Namespace) -> None:
                     break
                 if state == "observe" and key in (13, 32):
                     if selected_point is None:
-                        print("请先点击图片点。")
+                        print("Select an image point first.")
                         continue
-                    print("正在移动到安全失能位姿...")
+                    print("Moving to the safe disable pose...")
                     node.call_trigger(node.teach_safe_client, args.teach_safe_service)
                     if not wait_for_disable_confirmation(node):
                         state = "observe"
                         continue
-                    print("正在失能，请手动拖动机械臂到目标点，完成后按空格记录。")
+                    print("Disabling now. Manually move the arm to the target point, then press Space to record.")
                     node.set_enabled(False)
                     state = "manual"
                     continue
@@ -323,20 +323,20 @@ def run_calibrate(args: argparse.Namespace) -> None:
                     image_points.append(selected_point)
                     end_poses.append(end_pose)
                     save_records(image_points, end_poses)
-                    print("记录图片点:", selected_point)
-                    print("记录末端位姿 [x, y, z, RZ, RY, RX]:", end_pose.tolist())
-                    print(f"已保存 {len(image_points)} 组。正在重新使能并回观察位姿...")
+                    print("Recorded image point:", selected_point)
+                    print("Recorded end pose [x, y, z, RZ, RY, RX]:", end_pose.tolist())
+                    print(f"Saved {len(image_points)} samples. Re-enabling and returning to the observation pose...")
                     selected_point = None
                     node.set_enabled(True)
                     time.sleep(max(0.0, args.post_enable_wait))
                     node.call_trigger(node.reset_client, args.reset_service)
                     image_msg = node.wait_for_image()
                     frozen_image = ros_image_to_bgr(image_msg)
-                    print(f"图像分辨率: {frozen_image.shape[1]}x{frozen_image.shape[0]}")
+                    print(f"Image resolution: {frozen_image.shape[1]}x{frozen_image.shape[0]}")
                     state = "observe"
-                    print("继续点击下一点；Esc 退出。")
+                    print("Continue with the next point; Esc exits.")
         except KeyboardInterrupt:
-            print("\n收到 Ctrl-C，保存已有数据并计算 homography。")
+            print("\nReceived Ctrl-C; saving the collected data and computing the homography.")
     finally:
         save_records(image_points, end_poses)
         cv2.destroyAllWindows()
@@ -346,7 +346,7 @@ def run_calibrate(args: argparse.Namespace) -> None:
     if len(image_points) >= 4:
         compute_homography()
     else:
-        print(f"当前只有 {len(image_points)} 组，至少4组后再计算 homography。")
+        print(f"Only {len(image_points)} samples are available; collect at least 4 before computing the homography.")
 
 
 def run_test_passthrough() -> int:

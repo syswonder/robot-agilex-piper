@@ -15,7 +15,7 @@
 #   - Ranger sibling:    /Users/howenliu/lab/ranger_mini_deploy/soma.yaml
 #   - Component tree:    matches package_manifest.yaml provider_ids of
 #                        orbbec_camera / piper_ctl / piper_description in
-#                        /Users/howenliu/lab/packages/*_rbnx/
+#                        /Users/howenliu/lab/package_syswonder/*-rbnx/
 
 urdf:
   # Path is resolved relative to this YAML file's directory (soma

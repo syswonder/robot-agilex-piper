@@ -9,8 +9,8 @@ Vendored copy of the AgileX Piper URDF, served by `robonix-soma` at
 - `piper.urdf` — WITH-GRIPPER variant. `<robot name="piper">` with
   links `base_link → link1..link6 → link7/link8` (link7/link8 are the
   gripper fingers) and joints `joint1..joint8`. Source of truth:
-  `/Users/howenliu/lab/packages/piper_description_rbnx/src/piper_description/urdf/piper_description.urdf`
-  (upstream: <https://github.com/lhw2002426/piper_description_rbnx>).
+  `/Users/howenliu/lab/package_syswonder/primitive-agilex-piper-description-rbnx/src/piper_description/urdf/piper_description.urdf`
+  (upstream: <https://github.com/syswonder/primitive-agilex-piper-description-rbnx>).
 
 ## Frame conventions
 
@@ -38,8 +38,8 @@ gripper attached), copy the sibling file from the upstream package
 tree:
 
 ```bash
-cp /Users/howenliu/lab/packages/piper_description_rbnx/src/piper_description/urdf/piper_no_gripper_description.urdf \
-   /Users/howenliu/lab/rbnx_piper_packages/urdf/piper.urdf
+cp /Users/howenliu/lab/package_syswonder/primitive-agilex-piper-description-rbnx/src/piper_description/urdf/piper_no_gripper_description.urdf \
+   /Users/howenliu/lab/package_syswonder/robot-agilex-piper/urdf/piper.urdf
 ```
 
 and update `../soma.yaml`'s `tree.children` to drop the `gripper`
