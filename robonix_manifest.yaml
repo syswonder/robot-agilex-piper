@@ -57,6 +57,13 @@
 
 manifestVersion: 1
 name: robonix-piper-grasp-deploy
+catalog:
+  name: robonix.robot.agilex.piper_grasp
+  version: 0.1.0
+  description: Robonix deploy manifest for AgileX Piper with Orbbec Dabai DCW and vertical grasp pipeline.
+  tags: [robot, deploy, agilex, piper_grasp, camera, manipulation, perception, grasp]
+  maintainers:
+    - lhw2002426 <lhw2002426@users.noreply.github.com>
 
 env:
   # Pilot's LLM upstream — override on the launching shell (or via a
@@ -197,7 +204,7 @@ primitive:
   # anyway does not affect the sentinel behavior).
   #
   - name: orbbec_camera
-    url: https://github.com/lhw2002426/OrbbecSDK_rbnx
+    url: https://github.com/syswonder/primitive-orbbec-dabai_dcw-camera-rbnx
     branch: main
     config:
       camera_name: camera             # ROS namespace; topic prefix
@@ -235,7 +242,7 @@ primitive:
   # below to delegate that to the package itself (requires passwordless
   # sudo).
   - name: piper_ctl
-    url: https://github.com/lhw2002426/piper_ctl_rbnx
+    url: https://github.com/syswonder/primitive-agilex-piper-arm-rbnx
     branch: main
     config:
       can_port: can_piper
@@ -261,7 +268,7 @@ primitive:
   # base-frame transform) will work.
   #
   - name: piper_description
-    url: https://github.com/lhw2002426/piper_description_rbnx
+    url: https://github.com/syswonder/primitive-agilex-piper-description-rbnx
     branch: main
     config: {}
   # — package has no Driver(CMD_INIT) handler,
@@ -296,7 +303,7 @@ primitive:
   # package config: block is ignored.
   #
   - name: easy_handeye2
-    url: https://github.com/lhw2002426/easy_handeye2_rbnx
+    url: https://github.com/syswonder/primitive-agilex-piper-handeye-rbnx
     branch: main
 
 # service:
@@ -318,8 +325,8 @@ service:
   # Order: MUST come AFTER orbbec_camera (it consumes the camera stream).
   #
   - name: llm_detect
-    url: https://github.com/lhw2002426/llm_detect_rbnx
-    branch: feature/vertical-grasp
+    url: https://github.com/syswonder/service-object-detect-rbnx
+    branch: main
     config:
       # LLM API endpoint (OpenAI-compatible)
       llm_base_url: "https://api.ofox.ai/v1"
@@ -364,8 +371,8 @@ service:
   # Order: MUST come AFTER llm_detect (consumes its detection result).
   #
   - name: yolo_grasp
-    url: https://github.com/lhw2002426/yolo_grasp_rbnx
-    branch: feature/vertical-grasp
+    url: https://github.com/syswonder/service-grasp-pose-rbnx
+    branch: main
     config:
       # ── Vertical-grasp parameters (added on the feature/vertical-grasp branch) ──
       # Tabletop z in the base_link frame, in meters. This MUST be
@@ -424,7 +431,7 @@ service:
   # (manipulation has no perception dep at boot time).
   #
   - name: piper_moveit
-    url: https://github.com/lhw2002426/piper_moveit_rbnx
+    url: https://github.com/syswonder/service-piper-moveit-rbnx
     branch: main
     config:
       arm_group_name:       arm
@@ -491,8 +498,8 @@ skill:
   # yolo_grasp's approach_dist parameter.
   #
   - name: pick
-    url: https://github.com/lhw2002426/pick_skill_rbnx
-    branch: feature/vertical-grasp
+    url: https://github.com/syswonder/skill-pick-vertical-grasp-rbnx
+    branch: main
     config:
       default_timeout_s:    60.0     # used when caller passes 0
       default_max_retries:  5        # used when caller passes 0
