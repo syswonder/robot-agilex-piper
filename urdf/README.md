@@ -28,8 +28,9 @@ Key links referenced elsewhere in this deploy:
   (static TF `link6 → camera_color_optical_frame` staged by
   `easy_handeye2_rbnx/scripts/atlas_register_and_launch.py`).
 - `link7` / `link8` — parallel-jaw gripper fingers. Currently driven
-  as a **binary** open/close via `primitive/arm/pos_cmd[6]` (see
-  `openvla_client` config in `../robonix_manifest.yaml`).
+  as a **binary** open/close via `primitive/arm/joint_command` (the
+  `gripper` entry in the JointState carries the finger opening; the
+  Piper driver forwards it to `GripperCtrl`).
 
 ## Swapping to the no-gripper variant
 
