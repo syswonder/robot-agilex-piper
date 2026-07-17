@@ -65,11 +65,13 @@ tree:
   provided_by:
     - contract: robonix/primitive/arm/joint_states
       provider_id: piper_ctl
-    - contract: robonix/primitive/arm/arm_status
+    - contract: robonix/primitive/arm/joint_command
       provider_id: piper_ctl
     - contract: robonix/primitive/arm/end_pose
       provider_id: piper_ctl
-    - contract: robonix/primitive/arm/pos_cmd
+    - contract: robonix/primitive/arm/pos_command
+      provider_id: piper_ctl
+    - contract: robonix/primitive/arm/arm_status
       provider_id: piper_ctl
   children:
     - id: gripper
@@ -86,9 +88,10 @@ tree:
         max_width_m: 0.08
         max_payload_kg: 1.5
       provided_by:
-        # piper_ctl's pos_cmd carries gripper state in position[6] +
-        # velocity[6] (effort) — no separate provider.
-        - contract: robonix/primitive/arm/pos_cmd
+        # Gripper is commanded as a named joint in the arm's
+        # joint_command JointState (position[6] carries the finger
+        # opening) — no separate contract for the gripper alone.
+        - contract: robonix/primitive/arm/joint_command
           provider_id: piper_ctl
 
     - id: wrist_camera
@@ -128,7 +131,7 @@ description:
     (Python IK execute_grasp) → pick skill. Depth stream is
     unused. No mobile base.
   can_do:
-    - "Command joint positions on the Piper via primitive/arm/pos_cmd."
+    - "Command joint positions on the Piper via primitive/arm/joint_command, or an end-effector Cartesian pose via primitive/arm/pos_command."
     - "Read arm proprioception (joint_states, end_pose, arm_status)."
     - "Capture eye-in-hand RGB from the Orbbec Dabai DCW."
     - "Detect table-top objects by name via llm_detect (LLM VLM on RGB; depth stream is unused in this manifest)."
@@ -140,11 +143,11 @@ description:
     - "Grasp objects standing/lying above or below the reachable table plane — z is clamped to a single configured constant (default_desktop_height)."
     - "Grasp transparent/reflective objects reliably — LLM detection may still fail, but at least depth artifacts are no longer a failure mode (depth is not used)."
     - "See any scene outside the wrist camera's FOV."
-    - "Run closed-loop VLA policies — openvla_client is disabled in this manifest to keep /arm/pos_cmd owned by roboarm_ik."
+    - "Run closed-loop VLA policies — openvla_client is disabled in this manifest to keep /arm/joint_command owned by roboarm_ik."
   notes:
     - "The vendored URDF is the WITH-GRIPPER variant (joint1..joint8; joint7/joint8 are the gripper fingers). Override to no-gripper via env PIPER_URDF_PATH in robonix_manifest.yaml if a naked arm is needed."
     - "2D hand-eye calibration is loaded by grasp_pose from rbnx-boot/hand-eye-data/2d_homography.npy. Re-run tools/calibrate_handeye_2d.py if the camera mount, observe pose, or workspace layout changes."
     - "default_desktop_height (grasp_pose config) is the final physical grasp z in arm/base_link frame. A wrong value causes empty grasps or table collisions."
     - "llm_detect uses skip_depth=true: depth topic is not subscribed and depth-based fallback is disabled. Grasp geometry comes from RGB bbox + 2D homography + default_desktop_height."
-    - "openvla_client is commented out in this manifest (was the previous demo path). Do NOT re-enable it while llm_detect / grasp_pose / roboarm_ik are active — both would write to /arm/pos_cmd concurrently."
+    - "openvla_client is commented out in this manifest (was the previous demo path). Do NOT re-enable it while llm_detect / grasp_pose / roboarm_ik are active — both would write to /arm/joint_command concurrently."
     - "Soma v2 flat schema: this file is served verbatim; only urdf.path and robot.id are parsed. The tree / description sections are for LLM context via the future soma_bridge MCP adapter."
