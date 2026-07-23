@@ -110,13 +110,28 @@ service:
       camera_info_topic: ""
 
   # Bbox center -> arm/base_link top-down grasp pose.
+  #
+  # This deploy uses the orientation-aware grasp pose branch:
+  # `feature/orientation-detection`. In that branch the gripper yaw is
+  # driven by the LLM's `orientation` label (horizontal / vertical /
+  # diag_tlbr / diag_trbl) instead of the legacy "bbox longer edge"
+  # heuristic — see service-grasp-pose-rbnx/grasp_pose/main.py
+  # (_ORIENTATION_YAW_RAD). The legacy path is still used only as a
+  # fallback when orientation is "unknown".
   - name: grasp_pose
     url: https://github.com/syswonder/service-grasp-pose-rbnx
-    branch: main
+    branch: feature/orientation-detection
     config:
       hand_eye_calibration_file: ../../hand-eye-data/2d_homography.npy
       default_desktop_height: -0.21
       catch_offset: 0.00
+      # OBB (oriented bounding box) is NOT wired in yet: the current LLM
+      # detector and standard axis-aligned YOLO both emit 4-element
+      # bboxes, so this value has no effect in today's deployment. It is
+      # reserved for a future OBB detector (YOLO-OBB / cv2.minAreaRect)
+      # that would pass a 5th rotation element in bbox_2d. Angled grasps
+      # in this manifest come from the LLM's `orientation` label, not
+      # from this rotation value.
       box_rotation_deg: 0.0
       output_frame: "arm/base_link"
       approach_dist: 0.30

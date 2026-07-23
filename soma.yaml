@@ -135,7 +135,7 @@ description:
     - "Read arm proprioception (joint_states, end_pose, arm_status)."
     - "Capture eye-in-hand RGB from the Orbbec Dabai DCW."
     - "Detect table-top objects by name via llm_detect (LLM VLM on RGB; depth stream is unused in this manifest)."
-    - "Grasp table-top objects with a fixed vertical top-down approach — xy from LLM bbox + calibrated 2D homography, orientation locked vertical-down with yaw derived from the bbox long edge."
+    - "Grasp table-top objects with a fixed vertical top-down approach — xy from LLM bbox + calibrated 2D homography, orientation locked vertical-down. Gripper yaw is driven by the LLM's `orientation` label (horizontal / vertical / diag_tlbr / diag_trbl); if the LLM returns `unknown` it falls back to the legacy bbox long-edge heuristic. OBB detectors (rotated bboxes) are not wired in yet."
     - "Execute top-down grasp poses via roboarm_ik / execute_grasp, publishing joint and gripper commands through piper_ctl."
   cannot_do:
     - "Drive around — this deploy has no mobile base."
