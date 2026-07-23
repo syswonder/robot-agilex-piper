@@ -9,6 +9,25 @@
 # `pick ok` pipeline (grasp_pose + roboarm_ik) but now fetches every remote
 # package from the `syswonder` GitHub organization.
 #
+# Angled-grasp wiring (this manifest branch = `angle-grasp`):
+# The vertical top-down grasp pipeline is extended with a coarse
+# principal-axis orientation channel so the gripper yaw is chosen from
+# the object's principal axis instead of always the bbox long edge.
+# Three packages are pinned to a matching `feature/orientation-detection`
+# branch to form the contract end-to-end:
+#   * service-object-detect-rbnx  (llm_detect):  emits `orientation`
+#     ∈ {vertical, horizontal, diag_tlbr, diag_trbl, unknown} alongside
+#     the bbox (prompt + DetectObject.srv schema updated).
+#   * skill-pick-vertical-grasp-rbnx (pick):     threads the label from
+#     detect_object into grasp_request (GraspRequest.srv gains
+#     `string orientation`; atlas_bridge forwards it).
+#   * service-grasp-pose-rbnx     (grasp_pose):  maps the label to a
+#     canonical wrist yaw (_ORIENTATION_YAW_RAD); "unknown" / missing
+#     falls back to the legacy bbox long-edge heuristic.
+# OBB (rotated-bbox) detectors are NOT wired in — the `box_rotation_deg`
+# knob under grasp_pose is reserved for a future OBB detector and has
+# no runtime effect today. See each block below for details.
+#
 # Boot order is declaration order:
 #   1. rbnx starts system services.
 #   2. soma starts primitive packages.
@@ -94,10 +113,21 @@ primitive:
     config: {}
 
 service:
-  # RGB image -> VLM bbox. Depth is intentionally skipped.
+  # RGB image -> VLM bbox (+ orientation label). Depth is intentionally
+  # skipped.
+  #
+  # This deploy uses the orientation-aware detector branch:
+  # `feature/orientation-detection`. In addition to the standard bbox,
+  # the LLM prompt on that branch asks for a coarse principal-axis
+  # `orientation` field, quantized to one of
+  #   { vertical, horizontal, diag_tlbr, diag_trbl, unknown }
+  # (see service-object-detect-rbnx/config/prompts.toml and the
+  # DetectObject.srv schema). The value is forwarded by the pick skill
+  # into grasp_pose to fix the gripper yaw — see the grasp_pose block
+  # below for the consumer side.
   - name: llm_detect
     url: https://github.com/syswonder/service-object-detect-rbnx
-    branch: main
+    branch: feature/orientation-detection
     config:
       llm_base_url: ${VLM_BASE_URL}
       llm_api_key: ${VLM_API_KEY}
@@ -109,15 +139,17 @@ service:
       rgb_topic: ""
       camera_info_topic: ""
 
-  # Bbox center -> arm/base_link top-down grasp pose.
+  # Bbox (+ orientation) -> arm/base_link top-down grasp pose.
   #
   # This deploy uses the orientation-aware grasp pose branch:
-  # `feature/orientation-detection`. In that branch the gripper yaw is
-  # driven by the LLM's `orientation` label (horizontal / vertical /
-  # diag_tlbr / diag_trbl) instead of the legacy "bbox longer edge"
-  # heuristic — see service-grasp-pose-rbnx/grasp_pose/main.py
-  # (_ORIENTATION_YAW_RAD). The legacy path is still used only as a
-  # fallback when orientation is "unknown".
+  # `feature/orientation-detection`. The gripper yaw is driven by the
+  # `orientation` label produced upstream by llm_detect (see the
+  # llm_detect block above) and threaded through by the pick skill
+  # (skill-pick-vertical-grasp-rbnx@feature/orientation-detection,
+  # atlas_bridge._stage_grasp_request). The mapping label -> yaw lives
+  # in service-grasp-pose-rbnx/grasp_pose/main.py (_ORIENTATION_YAW_RAD).
+  # The legacy "bbox longer edge" heuristic is used only as a fallback
+  # when orientation is missing or resolves to "unknown".
   - name: grasp_pose
     url: https://github.com/syswonder/service-grasp-pose-rbnx
     branch: feature/orientation-detection
@@ -157,8 +189,18 @@ service:
 
 skill:
   # User-facing pick(object_name) skill.
+  #
+  # This deploy uses the orientation-aware pick branch:
+  # `feature/orientation-detection`. In that branch pick_skill reads the
+  # `orientation` field returned by llm_detect and forwards it into
+  # grasp_pose (GraspRequest.srv gains a `string orientation` field, and
+  # pick_skill/atlas_bridge.py copies it through). Together with the
+  # matching llm_detect + grasp_pose branches above this closes the
+  # detector -> skill -> grasp_pose orientation contract; on `main` the
+  # field simply doesn't exist and grasp_pose falls back to the bbox
+  # long-edge yaw.
   - name: pick
     url: https://github.com/syswonder/skill-pick-vertical-grasp-rbnx
-    branch: main
+    branch: feature/orientation-detection
     config:
       park_at_teach_safe_after_pick: true
